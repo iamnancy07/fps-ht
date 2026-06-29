@@ -306,7 +306,7 @@
           <div id="players-list">
             <div class="player-item ready">You (Ready)</div>
           </div>
-          <button id="ready-btn" class="ready">Ready</button>
+          <button id="ready-btn">Ready</button>
         </div>
       </div>
     </div>
@@ -1640,7 +1640,8 @@ function selectGamemode(mode) {
   closeGamemodeSelection();
 
   if (lobbyState.isMultiplayer) {
-    document.getElementById('lobby-screen').classList.add('hidden');
+    // Hide the lobby sections, show the multiplayer lobby with player list and chat
+    document.querySelector('.lobby-sections').style.display = 'none';
     document.getElementById('lobby-right').style.display = 'flex';
     // Simulate other players joining (for demo purposes)
     const playerCount = Math.floor(Math.random() * 4) + 2;
@@ -1662,8 +1663,9 @@ function updatePlayersList() {
 
   lobbyState.mockPlayers.forEach((player, i) => {
     const item = document.createElement('div');
-    item.className = 'player-item' + (i === 0 || lobbyState.playersReady > i ? ' ready' : '');
-    item.textContent = (i === 0 ? 'You' : player) + (i === 0 || lobbyState.playersReady > i ? ' ✓' : '');
+    const isReady = (i === 0 && lobbyState.playerReady) || (i > 0 && i <= lobbyState.playersReady);
+    item.className = 'player-item' + (isReady ? ' ready' : '');
+    item.textContent = (i === 0 ? 'You' : player) + (isReady ? ' ✓' : '');
     list.appendChild(item);
   });
 }
