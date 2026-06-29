@@ -161,6 +161,52 @@
   .lb-row .sc { font-weight: 800; min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
   .lb-row.you { background: rgba(255,212,121,.2); border: 1px solid rgba(255,212,121,.55); }
   .lb-empty { opacity: .5; font-size: 14px; padding: 14px; text-align: center; }
+
+  /* Lobby screen */
+  #lobby-screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                   background: linear-gradient(135deg, #1a1a22 0%, #2a2535 50%, #1a1a22 100%); color: #fff; z-index: 100; }
+  .lobby-container { display: flex; gap: 40px; max-width: 1200px; width: 90%; }
+  .lobby-sections { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; flex: 1; }
+  .lobby-section { position: relative; padding: 24px; border-radius: 12px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+                  cursor: pointer; transition: all .3s; min-height: 140px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                  text-align: center; overflow: hidden; }
+  .lobby-section:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.25); transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+  .lobby-section .icon { font-size: 36px; margin-bottom: 8px; }
+  .lobby-section .title { font-size: 16px; font-weight: 700; letter-spacing: 1px; }
+  .lobby-section .desc { font-size: 12px; opacity: .6; margin-top: 4px; }
+
+  /* Lobby right panel (Chat + Player list) */
+  .lobby-right { display: flex; flex-direction: column; gap: 16px; flex: 1; min-width: 240px; }
+  .lobby-panel { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 16px;
+                 display: flex; flex-direction: column; gap: 12px; }
+  .lobby-panel-title { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; opacity: .7; font-weight: 700; }
+  #chat-box { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+  .chat-msg { padding: 6px 8px; background: rgba(0,0,0,.2); border-radius: 6px; word-wrap: break-word; }
+  #players-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
+  .player-item { padding: 6px 8px; background: rgba(255,212,121,.1); border-radius: 6px; font-size: 12px; border-left: 2px solid #ffd479; }
+  .player-item.ready { background: rgba(55,214,122,.1); border-left-color: #37d67a; }
+  #ready-btn { margin-top: auto; padding: 10px 16px; background: #ffd479; color: #1a1a22; border: none; border-radius: 8px;
+               font-weight: 800; cursor: pointer; transition: all .12s; width: 100%; }
+  #ready-btn:hover { background: #ffe4a3; }
+  #ready-btn.ready { background: #37d67a; }
+
+  /* Gamemode modal */
+  #gamemode-modal { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex; align-items: center; justify-content: center;
+                     z-index: 200; opacity: 0; pointer-events: none; transition: opacity .3s; }
+  #gamemode-modal.active { opacity: 1; pointer-events: auto; }
+  .gamemode-content { background: radial-gradient(circle at center, rgba(30,30,45,.95), rgba(10,10,15,.98)); padding: 40px; border-radius: 16px;
+                      text-align: center; max-width: 500px; border: 1px solid rgba(255,255,255,.15); }
+  .gamemode-content h2 { font-size: 32px; margin-bottom: 24px; letter-spacing: 2px; }
+  .gamemode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .gamemode-btn { padding: 24px 16px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); border-radius: 10px;
+                  color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; transition: all .12s; text-align: center; }
+  .gamemode-btn:hover { background: rgba(255,255,255,.15); border-color: rgba(255,255,255,.35); transform: translateY(-2px); }
+  .gamemode-btn .icon { font-size: 32px; margin-bottom: 8px; display: block; }
+  .gamemode-btn .label { display: block; }
+  .gamemode-btn .desc { font-size: 12px; opacity: .6; margin-top: 8px; }
+  .gamemode-cancel { padding: 12px 24px; background: rgba(255,255,255,.1); color: #fff; border: 1px solid rgba(255,255,255,.2);
+                     border-radius: 8px; cursor: pointer; font-size: 14px; transition: all .12s; }
+  .gamemode-cancel:hover { background: rgba(255,255,255,.2); }
 </style>
 </head>
 <body>
@@ -202,8 +248,8 @@
   <div id="weapon-name">Pistol</div>
 </div>
 
-<!-- Start screen -->
-<div id="start-screen" class="overlay">
+<!-- Start screen (legacy) -->
+<div id="start-screen" class="overlay hidden">
   <h1>ARENA <span>FPS</span></h1>
   <p>Survive endless waves of low-poly bots. Each wave gets tougher. Switch weapons, keep moving, stay alive.</p>
   <div class="keys">
@@ -220,6 +266,74 @@
   <button class="btn" id="start-btn">Click to Play</button>
   <button class="btn secondary" id="settings-btn">⚙ Settings</button>
   <button class="btn secondary" id="leaderboard-btn">🏆 Leaderboard</button>
+</div>
+
+<!-- Lobby screen (new) -->
+<div id="lobby-screen" class="overlay">
+  <div style="width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px;">
+    <h1 style="margin-bottom: 32px;">ARENA <span>LOBBY</span></h1>
+    <div class="lobby-container">
+      <div class="lobby-sections">
+        <div class="lobby-section" id="lobby-shop">
+          <div class="icon">🛒</div>
+          <div class="title">SHOP</div>
+          <div class="desc">Buy weapons & abilities</div>
+        </div>
+        <div class="lobby-section" id="lobby-play">
+          <div class="icon">⚔</div>
+          <div class="title">PLAY</div>
+          <div class="desc">Start a match</div>
+        </div>
+        <div class="lobby-section" id="lobby-chat">
+          <div class="icon">💬</div>
+          <div class="title">CHAT</div>
+          <div class="desc">Global chat</div>
+        </div>
+        <div class="lobby-section" id="lobby-settings">
+          <div class="icon">⚙</div>
+          <div class="title">SETTINGS</div>
+          <div class="desc">Configure controls</div>
+        </div>
+      </div>
+      <div class="lobby-right" id="lobby-right" style="display: none;">
+        <div class="lobby-panel">
+          <div class="lobby-panel-title">💬 Chat</div>
+          <div id="chat-box"></div>
+          <input type="text" id="chat-input" placeholder="Type message..." style="padding: 6px 8px; background: rgba(0,0,0,.2); border: 1px solid rgba(255,255,255,.15); border-radius: 6px; color: #fff; outline: none; font-size: 12px;">
+        </div>
+        <div class="lobby-panel">
+          <div class="lobby-panel-title">👥 Players (<span id="player-count">1</span>/6)</div>
+          <div id="players-list">
+            <div class="player-item ready">You (Ready)</div>
+          </div>
+          <button id="ready-btn" class="ready">Ready</button>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top: 32px;">
+      <button class="btn secondary" id="lobby-leaderboard" style="margin-right: 12px;">🏆 Leaderboard</button>
+    </div>
+  </div>
+</div>
+
+<!-- Gamemode selection modal -->
+<div id="gamemode-modal">
+  <div class="gamemode-content">
+    <h2>SELECT GAMEMODE</h2>
+    <div class="gamemode-options">
+      <button class="gamemode-btn" id="gamemode-bots">
+        <span class="icon">🤖</span>
+        <span class="label">BOTS</span>
+        <span class="desc">Solo vs enemy NPCs</span>
+      </button>
+      <button class="gamemode-btn" id="gamemode-multiplayer">
+        <span class="icon">⚔</span>
+        <span class="label">MULTIPLAYER</span>
+        <span class="desc">PvP with real players</span>
+      </button>
+    </div>
+    <button class="gamemode-cancel" id="gamemode-cancel">Cancel</button>
+  </div>
 </div>
 
 <!-- Paused (mouse unlocked) -->
@@ -1343,19 +1457,28 @@ function updateAbilityHUD() {
 }
 
 // ---------- Shop ----------
-function openShop() {
+let shopFromLobby = false;   // remember if shop was opened from lobby
+function openShop(fromLobby = false) {
+  shopFromLobby = fromLobby;
   shopOpen = true; running = false;
-  document.exitPointerLock();
-  renderShop();
+  if (!fromLobby) document.exitPointerLock();
+  renderShop(fromLobby);
   document.getElementById('shop-screen').classList.remove('hidden');
 }
-function renderShop() {
+function renderShop(fromLobby = false) {
   document.getElementById('shop-coins-val').textContent = coins;
-  // warn on the shop button when the next wave is a boss wave
-  const bossNext = (wave + 1) % 5 === 0;
   const nextBtn = document.getElementById('next-wave-btn');
-  nextBtn.textContent = bossNext ? '☠ Start BOSS Wave →' : 'Start Next Wave →';
-  nextBtn.classList.toggle('boss-next', bossNext);
+  if (fromLobby) {
+    nextBtn.textContent = 'Back to Lobby';
+    nextBtn.classList.remove('boss-next');
+    nextBtn.onclick = closeLobbyShop;
+  } else {
+    // warn on the shop button when the next wave is a boss wave
+    const bossNext = (wave + 1) % 5 === 0;
+    nextBtn.textContent = bossNext ? '☠ Start BOSS Wave →' : 'Start Next Wave →';
+    nextBtn.classList.toggle('boss-next', bossNext);
+    nextBtn.onclick = nextWave;
+  }
   // Weapons
   const wg = document.getElementById('shop-weapons'); wg.innerHTML = '';
   WEAPONS.forEach((w, i) => {
@@ -1453,9 +1576,154 @@ function animate() {
   renderer.render(scene, camera);
 }
 
+// ---------- Lobby system ----------
+let lobbyState = {
+  gamemode: null,        // 'bots' or 'multiplayer'
+  isMultiplayer: false,
+  playerReady: false,
+  mockPlayers: ['You'],  // mock player list for multiplayer
+  chatMessages: [],
+  playersReady: 0,
+};
+
+function openLobby() {
+  document.getElementById('start-screen').classList.add('hidden');
+  document.getElementById('gameover-screen').classList.add('hidden');
+  document.getElementById('pause-screen').classList.add('hidden');
+  document.getElementById('lobby-screen').classList.remove('hidden');
+  lobbyState.gamemode = null;
+  lobbyState.playerReady = false;
+  lobbyState.mockPlayers = ['You'];
+  lobbyState.chatMessages = [];
+  closeLobbyPanel();
+  updatePlayersList();
+  updateReadyButton();
+}
+
+function closeLobbyPanel() {
+  document.getElementById('lobby-right').style.display = 'none';
+  document.querySelectorAll('.lobby-section').forEach(s => s.style.opacity = '1');
+}
+
+function openLobbySection(type) {
+  const right = document.getElementById('lobby-right');
+  right.style.display = 'flex';
+
+  if (type === 'shop') {
+    openShop(true);
+  } else if (type === 'play') {
+    document.getElementById('gamemode-modal').classList.add('active');
+  } else if (type === 'chat') {
+    right.style.display = 'flex';
+  } else if (type === 'settings') {
+    openSettings('lobby');
+  }
+}
+
+function closeLobbyShop() {
+  shopOpen = false;
+  document.getElementById('shop-screen').classList.add('hidden');
+  document.getElementById('lobby-screen').classList.remove('hidden');
+}
+
+function showGamemodeSelection() {
+  document.getElementById('gamemode-modal').classList.add('active');
+}
+
+function closeGamemodeSelection() {
+  document.getElementById('gamemode-modal').classList.remove('active');
+}
+
+function selectGamemode(mode) {
+  lobbyState.gamemode = mode;
+  lobbyState.isMultiplayer = mode === 'multiplayer';
+  closeGamemodeSelection();
+
+  if (lobbyState.isMultiplayer) {
+    document.getElementById('lobby-screen').classList.add('hidden');
+    document.getElementById('lobby-right').style.display = 'flex';
+    // Simulate other players joining (for demo purposes)
+    const playerCount = Math.floor(Math.random() * 4) + 2;
+    lobbyState.mockPlayers = ['You'];
+    for (let i = 0; i < playerCount - 1; i++) {
+      lobbyState.mockPlayers.push(`Player ${i + 2}`);
+    }
+    updatePlayersList();
+  } else {
+    startGame();
+  }
+}
+
+function updatePlayersList() {
+  const list = document.getElementById('players-list');
+  const count = document.getElementById('player-count');
+  list.innerHTML = '';
+  count.textContent = lobbyState.mockPlayers.length + '/6';
+
+  lobbyState.mockPlayers.forEach((player, i) => {
+    const item = document.createElement('div');
+    item.className = 'player-item' + (i === 0 || lobbyState.playersReady > i ? ' ready' : '');
+    item.textContent = (i === 0 ? 'You' : player) + (i === 0 || lobbyState.playersReady > i ? ' ✓' : '');
+    list.appendChild(item);
+  });
+}
+
+function toggleReady() {
+  lobbyState.playerReady = !lobbyState.playerReady;
+  updateReadyButton();
+  updatePlayersList();
+
+  if (lobbyState.playerReady) {
+    // Simulate other players readying
+    lobbyState.playersReady = lobbyState.mockPlayers.length - 1;
+    addChatMessage('System', 'All players are ready!');
+  }
+}
+
+function updateReadyButton() {
+  const btn = document.getElementById('ready-btn');
+  const canStart = lobbyState.playerReady && lobbyState.mockPlayers.length >= 2 && lobbyState.playersReady === lobbyState.mockPlayers.length - 1;
+
+  if (canStart) {
+    btn.classList.add('ready');
+    btn.textContent = 'START MATCH';
+    btn.onclick = startGame;
+  } else if (lobbyState.playerReady) {
+    btn.classList.add('ready');
+    btn.textContent = 'Ready (Waiting for others...)';
+    btn.onclick = () => toggleReady();
+  } else {
+    btn.classList.remove('ready');
+    btn.textContent = 'Ready';
+    btn.onclick = () => toggleReady();
+  }
+}
+
+function addChatMessage(player, message) {
+  lobbyState.chatMessages.push({ player, message, time: new Date() });
+  const box = document.getElementById('chat-box');
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg';
+  msg.innerHTML = '<b>' + (player === 'System' ? '[' + player + ']' : player) + ':</b> ' + String(message).replace(/[<>&]/g, '');
+  box.appendChild(msg);
+  box.scrollTop = box.scrollHeight;
+  if (lobbyState.chatMessages.length > 20) {
+    box.removeChild(box.firstChild);
+    lobbyState.chatMessages.shift();
+  }
+}
+
+function rejoinLobby() {
+  document.getElementById('lobby-screen').classList.remove('hidden');
+  document.getElementById('lobby-right').style.display = 'none';
+  lobbyState.gamemode = null;
+  lobbyState.playerReady = false;
+}
+
 // ---------- Game flow ----------
 function startGame() {
   document.getElementById('start-screen').classList.add('hidden');
+  document.getElementById('lobby-screen').classList.add('hidden');
   document.getElementById('gameover-screen').classList.add('hidden');
   document.getElementById('pause-screen').classList.add('hidden');
   document.getElementById('shop-screen').classList.add('hidden');
@@ -1463,6 +1731,7 @@ function startGame() {
   document.getElementById('boss-hud').classList.add('hidden');
   document.getElementById('boss-banner').classList.add('hidden');
   document.getElementById('leaderboard-screen').classList.add('hidden');
+  document.getElementById('gamemode-modal').classList.remove('active');
   lastRunEntry = null;
   started = true; shopOpen = false;
   // reset cheats (per-game only)
@@ -1490,6 +1759,10 @@ function startGame() {
   updateHealthHUD(); updateAmmoHUD(); updateCoinsHUD();
   gameOver = false;
   lockPointer();
+  // Start bot or multiplayer mode
+  if (lobbyState.isMultiplayer) {
+    addChatMessage('System', 'Match started with ' + lobbyState.mockPlayers.length + ' players!');
+  }
   startWave();
 }
 
@@ -1509,6 +1782,9 @@ function endGame() {
   lastRunEntry = addScore(name, score, wave);
   renderLeaderboard('gameover-leaderboard', lastRunEntry);
   document.getElementById('gameover-screen').classList.remove('hidden');
+  if (lobbyState.isMultiplayer) {
+    addChatMessage('System', 'You disconnected from the match');
+  }
 }
 
 // ---------- Boot ----------
@@ -1518,8 +1794,42 @@ initMuzzle();
 buildViewModel();
 animate();
 
-document.getElementById('start-btn').addEventListener('click', startGame);
-document.getElementById('restart-btn').addEventListener('click', startGame);
+// Lobby section event listeners
+document.getElementById('lobby-shop').addEventListener('click', () => openLobbySection('shop'));
+document.getElementById('lobby-play').addEventListener('click', () => openLobbySection('play'));
+document.getElementById('lobby-chat').addEventListener('click', () => openLobbySection('chat'));
+document.getElementById('lobby-settings').addEventListener('click', () => openLobbySection('settings'));
+
+// Gamemode selection
+document.getElementById('gamemode-bots').addEventListener('click', () => selectGamemode('bots'));
+document.getElementById('gamemode-multiplayer').addEventListener('click', () => selectGamemode('multiplayer'));
+document.getElementById('gamemode-cancel').addEventListener('click', closeGamemodeSelection);
+
+// Chat input
+document.getElementById('chat-input').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter' && e.target.value.trim()) {
+    addChatMessage('You', e.target.value);
+    e.target.value = '';
+  }
+});
+
+// Lobby leaderboard button
+document.getElementById('lobby-leaderboard').addEventListener('click', () => {
+  document.getElementById('lobby-screen').classList.add('hidden');
+  renderLeaderboard('full-leaderboard', null);
+  document.getElementById('leaderboard-screen').classList.remove('hidden');
+});
+
+// Update leaderboard back button to return to lobby
+const leaderboardBack = document.getElementById('leaderboard-back');
+leaderboardBack.onclick = () => {
+  document.getElementById('leaderboard-screen').classList.add('hidden');
+  document.getElementById('lobby-screen').classList.remove('hidden');
+};
+
+// Start game / Restart
+document.getElementById('start-btn').addEventListener('click', openLobby);
+document.getElementById('restart-btn').addEventListener('click', openLobby);
 document.getElementById('next-wave-btn').addEventListener('click', nextWave);
 
 // ---- Leaderboard wiring ----
@@ -1631,6 +1941,7 @@ function closeSettings() {
   listeningFor = null;
   document.getElementById('settings-screen').classList.add('hidden');
   if (settingsReturn === 'pause') document.getElementById('pause-screen').classList.remove('hidden');
+  else if (settingsReturn === 'lobby') document.getElementById('lobby-screen').classList.remove('hidden');
   else document.getElementById('start-screen').classList.remove('hidden');
 }
 
