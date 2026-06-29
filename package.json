@@ -1,0 +1,12 @@
+{
+  "name": "fps-shooter-game",
+  "version": "1.0.0",
+  "description": "A multiplayer FPS shooter game with lobby, shop, and bot support",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx http-server"
+  },
+  "keywords": ["fps", "game", "shooter", "multiplayer"],
+  "author": "",
+  "license": "MIT"
+}
