@@ -49,7 +49,7 @@
 
   /* Overlays */
   .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-             background: radial-gradient(circle at center, rgba(30,30,45,.85), rgba(10,10,15,.96)); color:#fff; text-align:center; }
+             background: radial-gradient(circle at center, rgba(30,30,45,.85), rgba(10,10,15,.96)); color:#fff; text-align:center; z-index: 200; }
   .overlay h1 { font-size: 54px; font-weight: 900; letter-spacing: 2px; margin-bottom: 6px; }
   .overlay h1 span { color:#ffd479; }
   .overlay p { font-size: 16px; opacity:.8; max-width: 520px; line-height: 1.6; margin: 6px 0; }
@@ -169,7 +169,7 @@
   .lobby-sections { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; flex: 1; }
   .lobby-section { position: relative; padding: 24px; border-radius: 12px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
                   cursor: pointer; transition: all .3s; min-height: 140px; display: flex; flex-direction: column; align-items: center; justify-content: center;
-                  text-align: center; overflow: hidden; }
+                  text-align: center; overflow: hidden; z-index: 300; }
   .lobby-section:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.25); transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
   .lobby-section .icon { font-size: 36px; margin-bottom: 8px; }
   .lobby-section .title { font-size: 16px; font-weight: 700; letter-spacing: 1px; }
@@ -1605,16 +1605,22 @@ function closeLobbyPanel() {
   document.querySelectorAll('.lobby-section').forEach(s => s.style.opacity = '1');
 }
 
+function closeLobbySection() {
+  document.getElementById('shop-screen').classList.add('hidden');
+  document.getElementById('settings-screen').classList.add('hidden');
+  document.getElementById('gamemode-modal').classList.remove('active');
+  document.getElementById('lobby-right').style.display = 'none';
+}
+
 function openLobbySection(type) {
-  const right = document.getElementById('lobby-right');
-  right.style.display = 'flex';
+  closeLobbySection();  // Close all previous overlays first
 
   if (type === 'shop') {
     openShop(true);
   } else if (type === 'play') {
     document.getElementById('gamemode-modal').classList.add('active');
   } else if (type === 'chat') {
-    right.style.display = 'flex';
+    document.getElementById('lobby-right').style.display = 'flex';
   } else if (type === 'settings') {
     openSettings('lobby');
   }
@@ -1817,6 +1823,7 @@ document.getElementById('chat-input').addEventListener('keypress', (e) => {
 
 // Lobby leaderboard button
 document.getElementById('lobby-leaderboard').addEventListener('click', () => {
+  closeLobbySection();
   document.getElementById('lobby-screen').classList.add('hidden');
   renderLeaderboard('full-leaderboard', null);
   document.getElementById('leaderboard-screen').classList.remove('hidden');
