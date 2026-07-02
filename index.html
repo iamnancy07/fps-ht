@@ -124,6 +124,7 @@
   .shop-grid { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; padding-right: 4px; }
   .shop-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; text-align: left;
                background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); }
+  .wpn-thumb { width: 56px; height: 56px; border-radius: 8px; background: rgba(255,255,255,.04); flex-shrink: 0; }
   .shop-item .info { flex: 1; }
   .shop-item .iname { font-size: 15px; font-weight: 700; }
   .shop-item .idesc { font-size: 11px; opacity: .6; }
@@ -724,6 +725,7 @@ const WEAPONS = [
 let curWeapon = 1;   // start on Pistol
 let lastShot = 0, reloading = false, reloadEnd = 0;
 let viewModel, recoilOffset = 0, meleeSwing = 0;
+let shopThumbs = [];   // spinning 3D preview renderers shown in the shop list
 
 // ---------- Abilities (bought in shop, 5s cooldown each) ----------
 const ABILITY_CD = 5;
@@ -789,34 +791,112 @@ function updateProjectiles(dt) {
   }
 }
 
-function buildViewModel() {
-  if (viewModel) camera.remove(viewModel);
-  viewModel = new THREE_.Group();
-  const w = WEAPONS[curWeapon];
-  const bodyMat = new THREE_.MeshStandardMaterial({ color: 0x2a2d3a, flatShading: true, roughness: .6, metalness: .4 });
-  const accentMat = new THREE_.MeshStandardMaterial({ color: w.color, flatShading: true, emissive: w.color, emissiveIntensity: .3 });
+// Builds a self-contained low-poly model for a weapon (used for both the
+// first-person view model and the spinning shop preview thumbnails).
+function buildGunModel(w) {
+  const group = new THREE_.Group();
+  const bodyMat   = new THREE_.MeshStandardMaterial({ color: 0x2a2d3a, flatShading: true, roughness: .6,  metalness: .4 });
+  const steelMat  = new THREE_.MeshStandardMaterial({ color: 0x6b7280, flatShading: true, roughness: .35, metalness: .6 });
+  const darkMat   = new THREE_.MeshStandardMaterial({ color: 0x14151c, flatShading: true, roughness: .7,  metalness: .3 });
+  const accentMat = new THREE_.MeshStandardMaterial({ color: w.color,  flatShading: true, emissive: w.color, emissiveIntensity: .35 });
+
+  const addBox = (sx, sy, sz, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
+    const m = new THREE_.Mesh(new THREE_.BoxGeometry(sx, sy, sz), mat);
+    m.position.set(x, y, z); m.rotation.set(rx, ry, rz); group.add(m); return m;
+  };
+  const addCyl = (r, len, mat, x, y, z, rx = Math.PI / 2, ry = 0, rz = 0, seg = 10) => {
+    const m = new THREE_.Mesh(new THREE_.CylinderGeometry(r, r, len, seg), mat);
+    m.position.set(x, y, z); m.rotation.set(rx, ry, rz); group.add(m); return m;
+  };
+  const addRing = (r, tube, mat, x, y, z, rx = 0, ry = 0, rz = 0, seg = 14) => {
+    const m = new THREE_.Mesh(new THREE_.TorusGeometry(r, tube, 8, seg), mat);
+    m.position.set(x, y, z); m.rotation.set(rx, ry, rz); group.add(m); return m;
+  };
 
   if (w.melee) {
-    // blade pointing forward + handle
     const len = w.name === 'Sword' ? 1.1 : 0.5;
-    const blade = new THREE_.Mesh(new THREE_.BoxGeometry(0.07, 0.16, len), accentMat);
-    blade.position.set(0, 0.05, -0.4 - len/2);
-    const guard = new THREE_.Mesh(new THREE_.BoxGeometry(0.28, 0.06, 0.1), bodyMat);
-    guard.position.set(0, 0.03, -0.4);
-    const handle = new THREE_.Mesh(new THREE_.BoxGeometry(0.08, 0.06, 0.3), bodyMat);
-    handle.position.set(0, -0.05, -0.2);
-    viewModel.add(blade, guard, handle);
+    addBox(0.07, 0.16, len, accentMat, 0, 0.05, -0.4 - len / 2);
+    addBox(0.28, 0.06, 0.1, bodyMat, 0, 0.03, -0.4);
+    addBox(0.08, 0.06, 0.3, bodyMat, 0, -0.05, -0.2);
+  } else if (w.name === 'Pistol') {
+    addBox(0.16, 0.17, 0.32, bodyMat, 0, 0, -0.05);
+    addCyl(0.035, 0.26, steelMat, 0, 0.035, -0.32);
+    addBox(0.11, 0.22, 0.12, darkMat, 0, -0.17, 0.13, 0.15, 0, 0);
+    addBox(0.03, 0.045, 0.05, accentMat, 0, 0.1, -0.1);
+    addBox(0.02, 0.04, 0.03, accentMat, 0, 0.09, -0.44);
+  } else if (w.name === 'Shotgun') {
+    addCyl(0.045, 0.52, steelMat, -0.055, 0.03, -0.38);
+    addCyl(0.045, 0.52, steelMat, 0.055, 0.03, -0.38);
+    addBox(0.17, 0.05, 0.06, accentMat, 0, 0.03, -0.18);
+    addBox(0.16, 0.09, 0.24, darkMat, 0, -0.06, -0.22);
+    addBox(0.11, 0.18, 0.13, darkMat, 0, -0.19, 0.13, 0.12, 0, 0);
+    addBox(0.1, 0.13, 0.3, darkMat, 0, -0.02, 0.38, 0.05, 0, 0);
+  } else if (w.name === 'SMG') {
+    addBox(0.15, 0.17, 0.4, bodyMat, 0, 0, -0.02);
+    addCyl(0.03, 0.22, steelMat, 0, 0.03, -0.33);
+    addBox(0.075, 0.28, 0.09, darkMat, 0, -0.24, -0.06, -0.35, 0, 0);
+    addBox(0.035, 0.035, 0.26, darkMat, 0, 0.01, 0.3);
+    addBox(0.1, 0.2, 0.11, darkMat, 0, -0.17, 0.16, 0.12, 0, 0);
+  } else if (w.name === 'Machine Gun') {
+    addBox(0.2, 0.2, 0.55, bodyMat, 0, 0, -0.05);
+    addCyl(0.05, 0.6, steelMat, 0, 0.03, -0.5);
+    addRing(0.06, 0.012, steelMat, 0, 0.03, -0.3);
+    addRing(0.06, 0.012, steelMat, 0, 0.03, -0.48);
+    addRing(0.06, 0.012, steelMat, 0, 0.03, -0.66);
+    addCyl(0.12, 0.1, darkMat, 0, -0.22, 0.02, 0, 0, Math.PI / 2);
+    addBox(0.025, 0.16, 0.025, darkMat, -0.09, -0.1, -0.28, 0, 0, 0.35);
+    addBox(0.025, 0.16, 0.025, darkMat, 0.09, -0.1, -0.28, 0, 0, -0.35);
+    addBox(0.22, 0.03, 0.06, accentMat, 0, 0.13, -0.15);
+    addBox(0.1, 0.2, 0.12, darkMat, 0, -0.18, 0.2, 0.12, 0, 0);
+  } else if (w.name === 'Sniper') {
+    addBox(0.14, 0.15, 0.4, bodyMat, 0, 0, -0.02);
+    addCyl(0.028, 0.7, steelMat, 0, 0.02, -0.55);
+    addCyl(0.038, 0.32, darkMat, 0, 0.14, -0.18);
+    addRing(0.042, 0.013, accentMat, 0, 0.14, -0.33);
+    addRing(0.042, 0.013, accentMat, 0, 0.14, -0.03);
+    addBox(0.03, 0.03, 0.1, steelMat, 0.09, 0.03, 0.05, 0, 0, 0.4);
+    addBox(0.1, 0.16, 0.34, darkMat, 0, -0.02, 0.37, 0.04, 0, 0);
+    addBox(0.02, 0.14, 0.02, darkMat, -0.07, -0.09, -0.18, 0, 0, 0.4);
+    addBox(0.02, 0.14, 0.02, darkMat, 0.07, -0.09, -0.18, 0, 0, -0.4);
+    addBox(0.1, 0.2, 0.12, darkMat, 0, -0.18, 0.18, 0.1, 0, 0);
+  } else if (w.name === 'Railgun') {
+    addBox(0.2, 0.22, 0.45, bodyMat, 0, 0, -0.05);
+    addCyl(0.05, 0.65, darkMat, 0, 0.02, -0.5);
+    addRing(0.075, 0.02, accentMat, 0, 0.02, -0.22);
+    addRing(0.075, 0.02, accentMat, 0, 0.02, -0.38);
+    addRing(0.075, 0.02, accentMat, 0, 0.02, -0.54);
+    addRing(0.075, 0.02, accentMat, 0, 0.02, -0.7);
+    addBox(0.02, 0.02, 0.16, accentMat, -0.05, 0.02, -0.82, 0, 0, 0.25);
+    addBox(0.02, 0.02, 0.16, accentMat, 0.05, 0.02, -0.82, 0, 0, -0.25);
+    addBox(0.15, 0.13, 0.12, accentMat, 0, -0.03, 0.17);
+    addBox(0.1, 0.2, 0.12, darkMat, 0, -0.18, 0.2, 0.1, 0, 0);
+  } else if (w.name === 'Rocket Launcher') {
+    addCyl(0.11, 0.85, steelMat, 0, 0, -0.4);
+    addRing(0.11, 0.02, accentMat, 0, 0, -0.82);
+    addCyl(0.115, 0.05, darkMat, 0, 0, 0.03);
+    for (let a = 0; a < 3; a++) {
+      const ang = a * (Math.PI * 2 / 3);
+      addBox(0.02, 0.15, 0.1, darkMat, Math.sin(ang) * 0.1, Math.cos(ang) * 0.1, 0.1, 0, 0, ang);
+    }
+    addBox(0.09, 0.18, 0.12, darkMat, 0, -0.19, -0.05, 0.1, 0, 0);
+    addBox(0.03, 0.03, 0.06, accentMat, 0, 0.13, -0.5);
   } else {
     const body = new THREE_.Mesh(new THREE_.BoxGeometry(0.18, 0.18, 0.55), bodyMat);
-    const barrelLen = w.aoe ? 0.7 : 0.5;
-    const barrel = new THREE_.Mesh(new THREE_.BoxGeometry(w.aoe ? 0.16 : 0.08, w.aoe ? 0.16 : 0.08, barrelLen), bodyMat);
-    barrel.position.set(0, 0.02, -0.3 - barrelLen/2);
+    const barrel = new THREE_.Mesh(new THREE_.BoxGeometry(0.08, 0.08, 0.5), bodyMat);
+    barrel.position.set(0, 0.02, -0.55);
     const accent = new THREE_.Mesh(new THREE_.BoxGeometry(0.2, 0.05, 0.2), accentMat);
     accent.position.set(0, 0.12, 0.05);
     const grip = new THREE_.Mesh(new THREE_.BoxGeometry(0.12, 0.26, 0.14), bodyMat);
     grip.position.set(0, -0.2, 0.18);
-    viewModel.add(body, barrel, accent, grip);
+    group.add(body, barrel, accent, grip);
   }
+  return group;
+}
+
+function buildViewModel() {
+  if (viewModel) camera.remove(viewModel);
+  const w = WEAPONS[curWeapon];
+  viewModel = buildGunModel(w);
   viewModel.position.set(0.28, -0.3, -0.9);
   viewModel.scale.setScalar(0.7);
   camera.add(viewModel);
@@ -1465,6 +1545,39 @@ function updateAbilityHUD() {
 
 // ---------- Shop ----------
 let shopFromLobby = false;   // remember if shop was opened from lobby
+
+function disposeShopThumbs() {
+  shopThumbs.forEach(t => {
+    t.scene.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
+    });
+    t.renderer.dispose();
+  });
+  shopThumbs.length = 0;
+}
+
+function createShopThumb(canvas, w) {
+  const renderer = new THREE_.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(56, 56, true);
+  const scene = new THREE_.Scene();
+  const camera = new THREE_.PerspectiveCamera(35, 1, 0.05, 10);
+  const key = new THREE_.DirectionalLight(0xffffff, 1.1);
+  key.position.set(1, 1.5, 2);
+  scene.add(key, new THREE_.AmbientLight(0xffffff, 0.55));
+  const model = buildGunModel(w);
+  const box = new THREE_.Box3().setFromObject(model);
+  const center = box.getCenter(new THREE_.Vector3());
+  const size = box.getSize(new THREE_.Vector3());
+  model.position.sub(center);
+  const wrapper = new THREE_.Group(); wrapper.add(model); scene.add(wrapper);
+  const maxDim = Math.max(size.x, size.y, size.z, 0.2);
+  camera.position.set(maxDim * 0.9, maxDim * 0.7, maxDim * 1.3);
+  camera.lookAt(0, 0, 0);
+  shopThumbs.push({ renderer, scene, camera, wrapper });
+}
+
 function openShop(fromLobby = false) {
   shopFromLobby = fromLobby;
   shopOpen = true; running = false;
@@ -1487,6 +1600,7 @@ function renderShop(fromLobby = false) {
     nextBtn.onclick = nextWave;
   }
   // Weapons
+  disposeShopThumbs();
   const wg = document.getElementById('shop-weapons'); wg.innerHTML = '';
   WEAPONS.forEach((w, i) => {
     const row = document.createElement('div'); row.className = 'shop-item';
@@ -1499,9 +1613,10 @@ function renderShop(fromLobby = false) {
     } else {
       btn = '<button class="ibuy locked">🪙 ' + w.price + '</button>';
     }
-    row.innerHTML = '<div class="info"><div class="iname">' + (i + 1) + '. ' + w.name + '</div><div class="idesc">' + w.desc + '</div></div>' + btn;
+    row.innerHTML = '<canvas class="wpn-thumb" data-thumb="' + i + '"></canvas><div class="info"><div class="iname">' + (i + 1) + '. ' + w.name + '</div><div class="idesc">' + w.desc + '</div></div>' + btn;
     wg.appendChild(row);
   });
+  wg.querySelectorAll('[data-thumb]').forEach(c => createShopThumb(c, WEAPONS[+c.dataset.thumb]));
   // Abilities
   const ag = document.getElementById('shop-abilities'); ag.innerHTML = '';
   for (const key in ABILITIES) {
@@ -1581,6 +1696,9 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
   if (running && !gameOver) update(dt);
   renderer.render(scene, camera);
+  if (shopOpen && shopThumbs.length) {
+    shopThumbs.forEach(t => { t.wrapper.rotation.y += dt * 0.9; t.renderer.render(t.scene, t.camera); });
+  }
 }
 
 // ---------- Lobby system ----------
