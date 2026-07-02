@@ -679,7 +679,14 @@ document.addEventListener('keyup', e => {
 
 // Pointer lock + mouse look
 const canvasEl = () => renderer.domElement;
-function lockPointer() { renderer.domElement.requestPointerLock(); }
+function lockPointer() {
+  // A button (Start, Ready, Next Wave, Resume...) may still hold keyboard focus
+  // from the click that got us here. Space/Enter auto-activate a focused button,
+  // so without this, pressing Jump (Space) mid-game re-fires that button's
+  // click handler (e.g. re-running startGame) and looks like a random reset.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  renderer.domElement.requestPointerLock();
+}
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === renderer.domElement;
   running = locked && !gameOver;
