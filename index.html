@@ -21,6 +21,23 @@
   #crosshair::before { top: 50%; left: 0; width: 100%; height: 2px; transform: translateY(-50%); }
   #crosshair::after  { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
 
+  /* Sniper/Railgun scope overlay */
+  #scope-overlay {
+    position: absolute; inset: 0; pointer-events: none; display: none;
+    background: radial-gradient(circle at center, transparent 0%, transparent 29.5%, #000 30%);
+  }
+  #scope-overlay.visible { display: block; }
+  #scope-overlay::before, #scope-overlay::after {
+    content: ''; position: absolute; background: rgba(0,0,0,.85);
+  }
+  #scope-overlay::before { top: 50%; left: 50%; width: 60vmax; height: 1px; transform: translate(-50%,-50%); }
+  #scope-overlay::after  { top: 50%; left: 50%; width: 1px; height: 60vmax; transform: translate(-50%,-50%); }
+  #scope-reticle {
+    position: absolute; top: 50%; left: 50%; width: 8px; height: 8px;
+    transform: translate(-50%, -50%); border-radius: 50%;
+    border: 2px solid rgba(255,50,50,.9); pointer-events: none;
+  }
+
   /* HUD */
   .hud { position: absolute; color: #fff; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,.7); user-select: none; }
   #health-wrap { left: 28px; bottom: 28px; }
@@ -44,6 +61,8 @@
   #hitmarker::before, #hitmarker::after { content:''; position:absolute; background:#ff5252; }
   #hitmarker::before { top:50%; left:0; width:100%; height:3px; transform:translateY(-50%);}
   #hitmarker::after  { left:50%; top:0; width:3px; height:100%; transform:translateX(-50%);}
+  #hitmarker.headshot { width: 22px; height: 22px; }
+  #hitmarker.headshot::before, #hitmarker.headshot::after { background: #ffd479; box-shadow: 0 0 6px #ffd479; }
 
   #damage-flash { position:absolute; inset:0; pointer-events:none; box-shadow: inset 0 0 120px 40px rgba(255,0,0,.0); transition: box-shadow .12s; }
 
@@ -215,6 +234,7 @@
 
 <!-- HUD -->
 <div id="crosshair"></div>
+<div id="scope-overlay"><div id="scope-reticle"></div></div>
 <div id="hitmarker"></div>
 <div id="damage-flash"></div>
 
@@ -436,7 +456,7 @@ function initThree() {
   scene.background = new THREE_.Color(0x10131c);
   scene.fog = new THREE_.Fog(0x10131c, 50, 130);
 
-  camera = new THREE_.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 500);
+  camera = new THREE_.PerspectiveCamera(BASE_FOV, window.innerWidth/window.innerHeight, 0.1, 500);
   camera.position.set(0, PLAYER_HEIGHT, 0);
 
   renderer = new THREE_.WebGLRenderer({ antialias: true });
@@ -535,12 +555,13 @@ const DEFAULT_SETTINGS = {
   sensitivity: 38,   // 1–100 slider; actual sens = value * 0.0001
   bindings: {
     forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
-    jump: 'Space', sprint: 'KeyR', reload: 'KeyE',
+    jump: 'Space', sprint: 'KeyR', reload: 'KeyE', aim: 'Mouse2',
   },
 };
 const BIND_LABELS = {
   forward: 'Move Forward', back: 'Move Backward', left: 'Strafe Left',
   right: 'Strafe Right', jump: 'Jump', sprint: 'Sprint', reload: 'Reload',
+  aim: 'Aim (Toggle)',
 };
 let settings = loadSettings();
 
@@ -562,7 +583,10 @@ function loadSettings() {
   return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 }
 function saveSettings() { localStorage.setItem('arenaFpsSettings', JSON.stringify(settings)); }
-function getSens() { return settings.sensitivity * 0.0001; }
+function getSens() {
+  const fovScale = camera ? camera.fov / BASE_FOV : 1;   // narrower FOV while aiming = lower turn speed
+  return settings.sensitivity * 0.0001 * fovScale;
+}
 
 // ---------- Leaderboard (top 10, stored locally) ----------
 const LB_MAX = 10;
@@ -597,8 +621,10 @@ function renderLeaderboard(containerId, highlightEntry) {
 }
 
 // Pretty-print a KeyboardEvent.code for display
+const MOUSE_LABELS = { Mouse0: 'L-Click', Mouse1: 'M-Click', Mouse2: 'R-Click' };
 function prettyKey(code) {
   if (!code) return '—';
+  if (MOUSE_LABELS[code]) return MOUSE_LABELS[code];
   return code
     .replace(/^Key/, '').replace(/^Digit/, '')
     .replace('ShiftLeft', 'L-Shift').replace('ShiftRight', 'R-Shift')
@@ -636,6 +662,7 @@ document.addEventListener('keydown', e => {
   if (e.code === settings.bindings.reload) reload();
   // jump + double-jump (edge-triggered; ignore key auto-repeat)
   if (e.code === settings.bindings.jump && !e.repeat) doJump();
+  if (e.code === settings.bindings.aim && !e.repeat) toggleAim();
   // abilities
   if (e.code === ABILITIES.speed.key) activateAbility('speed');
   if (e.code === ABILITIES.glider.key) activateAbility('glider');
@@ -705,22 +732,34 @@ document.addEventListener('mousemove', e => {
 });
 
 let firing = false;
-document.addEventListener('mousedown', e => { if (e.button === 0) { firing = true; tryShoot(); } });
+let aiming = false;
+function toggleAim() {
+  const w = WEAPONS[curWeapon];
+  if (w.melee) return;               // melee weapons can't aim/scope
+  aiming = !aiming;
+}
+document.addEventListener('mousedown', e => {
+  if (!running) return;
+  const code = 'Mouse' + e.button;
+  if (e.button === 0) { firing = true; tryShoot(); }
+  if (code === settings.bindings.aim) toggleAim();
+});
 document.addEventListener('mouseup',   e => { if (e.button === 0) firing = false; });
 
 // ---------- Weapons ----------
 // melee:true = swing attack (no ammo). aoe:true = splash damage on impact.
 // owned weapons are usable & shown in the HUD; others must be bought in the shop.
+const BASE_FOV = 75;
 const WEAPONS = [
   { name: 'Knife',          desc: 'Fast melee, infinite',  melee: true,  range: 4.0, dmg: 45,  fireRate: 0.32, color: 0xb0c4de, owned: true,  price: 0 },
-  { name: 'Pistol',         desc: 'Reliable sidearm',      dmg: 34, fireRate: 0.28, auto: false, pellets: 1, spread: 0.006, mag: 12, ammo: 12, reload: 1.0, color: 0xffd479, recoil: 0.012, owned: true,  price: 0 },
+  { name: 'Pistol',         desc: 'Reliable sidearm',      dmg: 34, fireRate: 0.28, auto: false, pellets: 1, spread: 0.006, mag: 12, ammo: 12, reload: 1.0, color: 0xffd479, recoil: 0.012, owned: true,  price: 0, zoomFov: 55 },
   { name: 'Sword',          desc: 'Heavy melee, hits all', melee: true,  range: 5.0, dmg: 85,  fireRate: 0.5,  color: 0xff9b4a, owned: false, price: 600 },
-  { name: 'Shotgun',        desc: '8 pellets, close range',dmg: 14, fireRate: 0.75, auto: false, pellets: 8, spread: 0.07,  mag: 6,  ammo: 6,  reload: 1.4, color: 0xff7b4a, recoil: 0.05,  owned: false, price: 350 },
-  { name: 'SMG',            desc: 'Full-auto, fast',       dmg: 16, fireRate: 0.075,auto: true,  pellets: 1, spread: 0.03,  mag: 30, ammo: 30, reload: 1.3, color: 0x8af0ff, recoil: 0.02,  owned: false, price: 500 },
-  { name: 'Machine Gun',    desc: 'Auto, huge mag',        dmg: 18, fireRate: 0.06, auto: true,  pellets: 1, spread: 0.035, mag: 60, ammo: 60, reload: 2.0, color: 0x7ef07e, recoil: 0.025, owned: false, price: 900 },
-  { name: 'Sniper',         desc: 'One-shot, slow',        dmg: 150,fireRate: 1.2,  auto: false, pellets: 1, spread: 0.0,   mag: 5,  ammo: 5,  reload: 2.0, color: 0xffffff, recoil: 0.06,  owned: false, price: 1200 },
-  { name: 'Railgun',        desc: 'Devastating beam',      dmg: 120,fireRate: 1.1,  auto: false, pellets: 1, spread: 0.0,   mag: 4,  ammo: 4,  reload: 1.8, color: 0xc98bff, recoil: 0.07,  owned: false, price: 1800 },
-  { name: 'Rocket Launcher',desc: 'One-shot direct hit + splash', dmg: 250, fireRate: 1.3, auto: false, pellets: 1, spread: 0.005, mag: 3, ammo: 3, reload: 2.2, color: 0xff5252, recoil: 0.08, owned: false, price: 2200, aoe: true, aoeRadius: 7 },
+  { name: 'Shotgun',        desc: '8 pellets, close range',dmg: 14, fireRate: 0.75, auto: false, pellets: 8, spread: 0.07,  mag: 6,  ammo: 6,  reload: 1.4, color: 0xff7b4a, recoil: 0.05,  owned: false, price: 350, zoomFov: 60 },
+  { name: 'SMG',            desc: 'Full-auto, fast',       dmg: 16, fireRate: 0.075,auto: true,  pellets: 1, spread: 0.03,  mag: 30, ammo: 30, reload: 1.3, color: 0x8af0ff, recoil: 0.02,  owned: false, price: 500, zoomFov: 55 },
+  { name: 'Machine Gun',    desc: 'Auto, huge mag',        dmg: 18, fireRate: 0.06, auto: true,  pellets: 1, spread: 0.035, mag: 60, ammo: 60, reload: 2.0, color: 0x7ef07e, recoil: 0.025, owned: false, price: 900, zoomFov: 55 },
+  { name: 'Sniper',         desc: 'One-shot, slow',        dmg: 150,fireRate: 1.2,  auto: false, pellets: 1, spread: 0.0,   mag: 5,  ammo: 5,  reload: 2.0, color: 0xffffff, recoil: 0.06,  owned: false, price: 1200, zoomFov: 12, scopeOverlay: true },
+  { name: 'Railgun',        desc: 'Devastating beam',      dmg: 120,fireRate: 1.1,  auto: false, pellets: 1, spread: 0.0,   mag: 4,  ammo: 4,  reload: 1.8, color: 0xc98bff, recoil: 0.07,  owned: false, price: 1800, zoomFov: 20, scopeOverlay: true },
+  { name: 'Rocket Launcher',desc: 'One-shot direct hit + splash', dmg: 250, fireRate: 1.3, auto: false, pellets: 1, spread: 0.005, mag: 3, ammo: 3, reload: 2.2, color: 0xff5252, recoil: 0.08, owned: false, price: 2200, aoe: true, aoeRadius: 7, zoomFov: 55 },
 ];
 let curWeapon = 1;   // start on Pistol
 let lastShot = 0, reloading = false, reloadEnd = 0;
@@ -921,6 +960,7 @@ function switchWeapon(i) {
   if (i === curWeapon || reloading) return;
   if (!WEAPONS[i] || !WEAPONS[i].owned) return;   // can only equip owned weapons
   curWeapon = i;
+  aiming = false;
   buildViewModel();
   document.querySelectorAll('.wpn-slot').forEach(el =>
     el.classList.toggle('active', +el.dataset.slot === i));
@@ -975,16 +1015,17 @@ function tryShoot() {
   if (w.aoe) {
     const dir = new THREE_.Vector3(); camera.getWorldDirection(dir);
     ray.set(origin, dir);
-    const meshes = enemies.filter(e => e.alive).map(e => e.hitMesh);
+    const meshes = enemies.filter(e => e.alive).flatMap(e => [e.hitMesh, e.head]);
     const hits = ray.intersectObjects(meshes, false);
     const directEnemy = hits.length ? hits[0].object.userData.enemy : null;
+    const directHeadshot = hits.length && hits[0].object.userData.isHead;
     const impact = hits.length ? hits[0].point : origin.clone().add(dir.multiplyScalar(80));
     spawnExplosion(impact, w.aoeRadius);
-    let any = false;
+    let any = false, anyHeadshot = false;
     // a direct hit one-shots normal enemies; bosses take heavy (but not lethal) damage
     if (directEnemy && directEnemy.alive) {
-      damageEnemy(directEnemy, directEnemy.isBoss ? w.dmg * 1.5 : directEnemy.hp, directEnemy.group.position);
-      any = true;
+      damageEnemy(directEnemy, directEnemy.isBoss ? w.dmg * 1.5 : directEnemy.hp, directEnemy.group.position, directHeadshot);
+      any = true; anyHeadshot = directHeadshot;
     }
     for (const e of enemies) {
       if (!e.alive || e === directEnemy) continue;
@@ -994,29 +1035,32 @@ function tryShoot() {
         any = true;
       }
     }
-    if (any) showHitmarker();
+    if (any) showHitmarker(anyHeadshot);
     return;
   }
 
   // hitscan for each pellet
-  let hitAny = false;
+  let hitAny = false, anyHeadshot = false;
+  const spread = aiming ? w.spread * 0.3 : w.spread;   // aiming down sights tightens accuracy
   for (let p = 0; p < w.pellets; p++) {
     const dir = new THREE_.Vector3();
     camera.getWorldDirection(dir);
-    dir.x += (Math.random()-.5) * w.spread;
-    dir.y += (Math.random()-.5) * w.spread;
-    dir.z += (Math.random()-.5) * w.spread;
+    dir.x += (Math.random()-.5) * spread;
+    dir.y += (Math.random()-.5) * spread;
+    dir.z += (Math.random()-.5) * spread;
     dir.normalize();
     ray.set(origin, dir);
-    const meshes = enemies.filter(e => e.alive).map(e => e.hitMesh);
+    const meshes = enemies.filter(e => e.alive).flatMap(e => [e.hitMesh, e.head]);
     const hits = ray.intersectObjects(meshes, false);
     if (hits.length) {
       const enemy = hits[0].object.userData.enemy;
-      damageEnemy(enemy, w.dmg, hits[0].point);
+      const headshot = !!hits[0].object.userData.isHead;
+      damageEnemy(enemy, w.dmg, hits[0].point, headshot);
       hitAny = true;
+      if (headshot) anyHeadshot = true;
     }
   }
-  if (hitAny) showHitmarker();
+  if (hitAny) showHitmarker(anyHeadshot);
 }
 
 // Melee: swing animation + hit enemies in a frontal cone within range.
@@ -1026,7 +1070,7 @@ function meleeAttack(w) {
   const camPos = camera.getWorldPosition(new THREE_.Vector3());
   const dir = new THREE_.Vector3(); camera.getWorldDirection(dir);
   const coneDot = w.name === 'Sword' ? 0.45 : 0.6;
-  let hitAny = false;
+  let hitAny = false, anyHeadshot = false;
   for (const e of enemies) {
     if (!e.alive) continue;
     const toE = new THREE_.Vector3().subVectors(e.group.position, camPos); toE.y = 0;
@@ -1034,17 +1078,28 @@ function meleeAttack(w) {
     if (d > w.range) continue;
     toE.normalize();
     if (dir.x * toE.x + dir.z * toE.z > coneDot) {
-      damageEnemy(e, w.dmg, e.group.position);
+      // approximate headshot: is the camera's aim pitch pointed at/above head height at this range?
+      const aimY = camPos.y + dir.y * d;
+      const headshot = aimY >= e.headBottomY;
+      damageEnemy(e, w.dmg, e.group.position, headshot);
       hitAny = true;
+      if (headshot) anyHeadshot = true;
       if (w.name !== 'Sword') break;   // knife = single target
     }
   }
-  if (hitAny) showHitmarker();
+  if (hitAny) showHitmarker(anyHeadshot);
 }
 
 // ---------- Enemies (bots) ----------
 const enemies = [];
 let wave = 1, score = 0, aliveCount = 0, toSpawn = 0, waveActive = false;
+const HEADSHOT_MULT = 2;
+
+// world-space Y of the bottom of a head mesh (box geometry, centered locally, no rotation)
+function headBottomY(head) {
+  head.geometry.computeBoundingBox();
+  return head.position.y + head.geometry.boundingBox.min.y;
+}
 
 function spawnEnemy() {
   const g = new THREE_.Group();
@@ -1085,10 +1140,11 @@ function spawnEnemy() {
   const speed = 4 + Math.min(wave*0.35, 5) + Math.random()*1.5;
   const enemy = {
     group: g, hitMesh: body, alive: true, hp: maxHp, maxHp,
-    speed, barFg, body, legL, legR, head,
+    speed, barFg, body, legL, legR, head, headBottomY: headBottomY(head),
     lastAttack: 0, walkPhase: Math.random()*6.28,
   };
   body.userData.enemy = enemy;
+  head.userData.enemy = enemy; head.userData.isHead = true;
   scene.add(g);
   enemies.push(enemy);
   aliveCount++;
@@ -1144,11 +1200,12 @@ function spawnSkeleton() {
   const speed = 3 + Math.min(wave*0.2, 3);
   const enemy = {
     group: g, hitMesh: body, alive: true, hp: maxHp, maxHp,
-    speed, barFg, body, legL, legR, head: skull,
+    speed, barFg, body, legL, legR, head: skull, headBottomY: headBottomY(skull),
     lastAttack: 0, walkPhase: Math.random()*6.28,
     isRanged: true, fireCd: 1.6, preferred: 18,
   };
   body.userData.enemy = enemy;
+  skull.userData.enemy = enemy; skull.userData.isHead = true;
   scene.add(g);
   enemies.push(enemy);
   aliveCount++;
@@ -1195,10 +1252,11 @@ function spawnBoss() {
   const speed = 3.0 + Math.min(wave * 0.12, 3);
   const enemy = {
     group: g, hitMesh: body, alive: true, hp: maxHp, maxHp,
-    speed, barFg, body, legL, legR, head,
+    speed, barFg, body, legL, legR, head, headBottomY: headBottomY(head),
     lastAttack: 0, walkPhase: Math.random() * 6.28, isBoss: true,
   };
   body.userData.enemy = enemy;
+  head.userData.enemy = enemy; head.userData.isHead = true;
   scene.add(g);
   enemies.push(enemy);
   aliveCount++;
@@ -1253,8 +1311,9 @@ function startWave() {
   }
 }
 
-function damageEnemy(e, dmg, point) {
+function damageEnemy(e, dmg, point, headshot) {
   if (!e.alive) return;
+  if (headshot) dmg *= HEADSHOT_MULT;
   e.hp -= dmg;
   // hit pop
   e.body.scale.set(1.15, 0.9, 1.15);
@@ -1303,9 +1362,10 @@ function updateHealthHUD() {
                                 : 'linear-gradient(90deg,#d63b3b,#ff7b7b)';
 }
 let hitTimer = 0;
-function showHitmarker() {
+function showHitmarker(headshot) {
   const hm = document.getElementById('hitmarker');
   hm.style.opacity = '1'; hitTimer = 0.12;
+  hm.classList.toggle('headshot', !!headshot);
 }
 function damageFlash() {
   const f = document.getElementById('damage-flash');
@@ -1348,6 +1408,7 @@ function update(dt) {
   let speed = (keys[b.sprint] ? 17 : 10.5);
   if (clock.elapsedTime < speedBoostEnd) speed *= 1.7;   // Speed Boost ability
   if (gliderActive) speed *= 1.6;                         // Glider = fly faster
+  if (aiming) speed *= 0.5;                                // Aiming down sights = slower
   const forward = new THREE_.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const right   = new THREE_.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
   let move = new THREE_.Vector3();
@@ -1381,6 +1442,17 @@ function update(dt) {
   // ---- camera orientation ----
   const euler = new THREE_.Euler(player.pitch, player.yaw, 0, 'YXZ');
   camera.quaternion.setFromEuler(euler);
+
+  // ---- aim/scope zoom ----
+  const targetFov = (aiming && !w.melee) ? w.zoomFov : BASE_FOV;
+  if (Math.abs(camera.fov - targetFov) > 0.01) {
+    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 12);
+    camera.updateProjectionMatrix();
+  }
+  const scoped = aiming && w.scopeOverlay;
+  document.getElementById('scope-overlay').classList.toggle('visible', scoped);
+  document.getElementById('crosshair').style.visibility = scoped ? 'hidden' : 'visible';
+  if (viewModel) viewModel.visible = !scoped;
 
   // weapon sway/recoil recovery + melee swing
   recoilOffset *= Math.pow(0.0001, dt);
@@ -1884,7 +1956,7 @@ function startGame() {
   // reset abilities
   for (const k in ABILITIES) { ABILITIES[k].owned = false; ABILITIES[k].cdEnd = 0; }
   speedBoostEnd = 0; gliderActive = false; airJumps = 0; meleeSwing = 0;
-  curWeapon = 1; reloading = false;   // start on Pistol
+  curWeapon = 1; reloading = false; aiming = false; camera.fov = BASE_FOV; camera.updateProjectionMatrix();   // start on Pistol
   buildViewModel();
   renderWeaponList();
   renderAbilityHUD();
@@ -2052,14 +2124,28 @@ document.addEventListener('keydown', (e) => {
   if (!listeningFor) return;
   e.preventDefault(); e.stopPropagation();
   if (e.code !== 'Escape') {            // Escape cancels without changing
-    // free this key from any other action (avoid duplicate binds)
-    for (const a in settings.bindings) if (settings.bindings[a] === e.code) settings.bindings[a] = '';
-    settings.bindings[listeningFor] = e.code;
-    saveSettings();
+    applyBinding(listeningFor, e.code);
   }
   listeningFor = null;
   buildBindingsUI();
 }, true);
+
+// capture the next mouse click while rebinding (lets actions like Aim use a mouse button)
+document.addEventListener('mousedown', (e) => {
+  if (!listeningFor) return;
+  e.preventDefault(); e.stopPropagation();
+  applyBinding(listeningFor, 'Mouse' + e.button);
+  listeningFor = null;
+  buildBindingsUI();
+}, true);
+document.addEventListener('contextmenu', (e) => { if (listeningFor || running) e.preventDefault(); });
+
+function applyBinding(action, code) {
+  // free this key/button from any other action (avoid duplicate binds)
+  for (const a in settings.bindings) if (settings.bindings[a] === code) settings.bindings[a] = '';
+  settings.bindings[action] = code;
+  saveSettings();
+}
 
 function openSettings(from) {
   settingsReturn = from;
