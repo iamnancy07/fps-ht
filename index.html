@@ -215,9 +215,9 @@
                      z-index: 200; opacity: 0; pointer-events: none; transition: opacity .3s; }
   #gamemode-modal.active { opacity: 1; pointer-events: auto; }
   .gamemode-content { background: radial-gradient(circle at center, rgba(30,30,45,.95), rgba(10,10,15,.98)); padding: 40px; border-radius: 16px;
-                      text-align: center; max-width: 500px; border: 1px solid rgba(255,255,255,.15); }
+                      text-align: center; max-width: 640px; border: 1px solid rgba(255,255,255,.15); }
   .gamemode-content h2 { font-size: 32px; margin-bottom: 24px; letter-spacing: 2px; }
-  .gamemode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .gamemode-options { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   .gamemode-btn { padding: 24px 16px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); border-radius: 10px;
                   color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; transition: all .12s; text-align: center; }
   .gamemode-btn:hover { background: rgba(255,255,255,.15); border-color: rgba(255,255,255,.35); transform: translateY(-2px); }
@@ -352,6 +352,11 @@
         <span class="label">MULTIPLAYER</span>
         <span class="desc">PvP with real players</span>
       </button>
+      <button class="gamemode-btn" id="gamemode-ctf">
+        <span class="icon">🚩</span>
+        <span class="label">CAPTURE THE FLAG</span>
+        <span class="desc">Fight through enemies to capture flags</span>
+      </button>
     </div>
     <button class="gamemode-cancel" id="gamemode-cancel">Cancel</button>
   </div>
@@ -377,6 +382,14 @@
   <div class="lb-title">🏆 Top Scores</div>
   <div id="gameover-leaderboard" class="lb-list"></div>
   <button class="btn" id="restart-btn">Play Again</button>
+</div>
+
+<!-- CTF level complete -->
+<div id="ctf-complete-screen" class="overlay hidden">
+  <h1>LEVEL <span>COMPLETE</span></h1>
+  <p id="ctf-complete-sub">Captured 3 flags on Level 1</p>
+  <button class="btn" id="ctf-next-level-btn">Next Level →</button>
+  <button class="btn secondary" id="ctf-menu-btn">Main Menu</button>
 </div>
 
 <!-- Leaderboard (from start screen) -->
@@ -448,6 +461,8 @@
 const THREE_ = THREE;
 let scene, camera, renderer, clock;
 const ARENA = 60;        // half-size of the square arena
+const CTF_ARENA = 150;   // half-size of the larger Capture the Flag arena (300x300)
+let arenaHalf = ARENA;   // half-size of whichever arena is currently active (used for bounds/spawning)
 let running = false, gameOver = false, started = false, shopOpen = false;
 
 // ---------- Renderer / Scene ----------
@@ -480,6 +495,7 @@ function initThree() {
   scene.add(sun);
 
   buildArena();
+  buildCtfArena();
   window.addEventListener('resize', onResize);
 }
 
@@ -490,29 +506,36 @@ function onResize() {
 }
 
 // ---------- Arena ----------
-const obstacles = []; // {min:{x,z}, max:{x,z}} AABBs for collision
+const obstacles = []; // {min:{x,z}, max:{x,z}} AABBs for collision (main arena)
+const ctfObstacles = []; // same, for the larger CTF arena
+let activeObstacles = obstacles; // whichever arena is currently active
+let mainArenaGroup, ctfArenaGroup;
+
 function addBox(x, y, z, w, h, dpt, color) {
   const geo = new THREE_.BoxGeometry(w, h, dpt);
   const mat = new THREE_.MeshStandardMaterial({ color, flatShading: true, roughness: .9, metalness: .05 });
   const mesh = new THREE_.Mesh(geo, mat);
   mesh.position.set(x, y, z);
   mesh.castShadow = true; mesh.receiveShadow = true;
-  scene.add(mesh);
+  mainArenaGroup.add(mesh);
   obstacles.push({ min: { x: x - w/2, z: z - dpt/2 }, max: { x: x + w/2, z: z + dpt/2 } });
   return mesh;
 }
 
 function buildArena() {
+  mainArenaGroup = new THREE_.Group();
+  scene.add(mainArenaGroup);
+
   // Floor
   const floorGeo = new THREE_.PlaneGeometry(ARENA*2, ARENA*2, 24, 24);
   const floorMat = new THREE_.MeshStandardMaterial({ color: 0x2b2f45, roughness: 1, flatShading: true });
   const floor = new THREE_.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
-  scene.add(floor);
+  mainArenaGroup.add(floor);
 
   // Grid overlay
   const grid = new THREE_.GridHelper(ARENA*2, 40, 0x4455aa, 0x33384f);
-  grid.position.y = 0.02; scene.add(grid);
+  grid.position.y = 0.02; mainArenaGroup.add(grid);
 
   // Perimeter walls (also collidable)
   const wallH = 8, t = 2, wc = 0x3a4060;
@@ -533,6 +556,86 @@ function buildArena() {
     const h = 3 + (i % 3) * 1.8;
     addBox(b[0], h/2, b[2], b[3], h, b[4], palette[i % palette.length]);
   });
+}
+
+// ---------- CTF arena (much bigger, so the flag run is a real trek) ----------
+const CTF_BASE = { x: 0, z: -(CTF_ARENA - 15) };  // player spawn / return-to-capture point
+
+function addCtfBox(x, y, z, w, h, dpt, color) {
+  const geo = new THREE_.BoxGeometry(w, h, dpt);
+  const mat = new THREE_.MeshStandardMaterial({ color, flatShading: true, roughness: .9, metalness: .05 });
+  const mesh = new THREE_.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  ctfArenaGroup.add(mesh);
+  ctfObstacles.push({ min: { x: x - w/2, z: z - dpt/2 }, max: { x: x + w/2, z: z + dpt/2 } });
+}
+
+function buildCtfArena() {
+  ctfArenaGroup = new THREE_.Group();
+  ctfArenaGroup.visible = false;
+  scene.add(ctfArenaGroup);
+
+  const floorGeo = new THREE_.PlaneGeometry(CTF_ARENA*2, CTF_ARENA*2, 40, 40);
+  const floorMat = new THREE_.MeshStandardMaterial({ color: 0x242a42, roughness: 1, flatShading: true });
+  const floor = new THREE_.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
+  ctfArenaGroup.add(floor);
+
+  const grid = new THREE_.GridHelper(CTF_ARENA*2, 60, 0x4455aa, 0x2c314a);
+  grid.position.y = 0.02; ctfArenaGroup.add(grid);
+
+  const wallH = 8, t = 2, wc = 0x30365a;
+  addCtfBox(0,  wallH/2, -CTF_ARENA, CTF_ARENA*2, wallH, t, wc);
+  addCtfBox(0,  wallH/2,  CTF_ARENA, CTF_ARENA*2, wallH, t, wc);
+  addCtfBox(-CTF_ARENA, wallH/2, 0, t, wallH, CTF_ARENA*2, wc);
+  addCtfBox( CTF_ARENA, wallH/2, 0, t, wallH, CTF_ARENA*2, wc);
+
+  // Base pad — glowing blue disc marking the spawn / flag return point
+  const baseMat = new THREE_.MeshStandardMaterial({ color: 0x2f6fff, emissive: 0x123a8a, emissiveIntensity: .3, flatShading: true });
+  const basePad = new THREE_.Mesh(new THREE_.CylinderGeometry(6, 6, 0.3, 24), baseMat);
+  basePad.position.set(CTF_BASE.x, 0.15, CTF_BASE.z);
+  ctfArenaGroup.add(basePad);
+  const baseLight = new THREE_.PointLight(0x2f6fff, 1.2, 30);
+  baseLight.position.set(CTF_BASE.x, 3, CTF_BASE.z);
+  ctfArenaGroup.add(baseLight);
+
+  buildCtfParkour();
+}
+
+// A block you can jump on top of and stand on (registered in ctfPlatforms for collision)
+function addCtfPlatform(x, z, w, d, h, color) {
+  const geo = new THREE_.BoxGeometry(w, h, d);
+  const mat = new THREE_.MeshStandardMaterial({ color, flatShading: true, roughness: .85 });
+  const mesh = new THREE_.Mesh(geo, mat);
+  mesh.position.set(x, h/2, z);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  ctfArenaGroup.add(mesh);
+  ctfPlatforms.push({ min: { x: x - w/2, z: z - d/2 }, max: { x: x + w/2, z: z + d/2 }, top: h });
+}
+
+// A scattered cluster of jump blocks along the base-to-flag corridor — all optional
+// (ground stays walkable everywhere), heights kept within single-jump reach (~5 units)
+function buildCtfParkour() {
+  const palette = [0x5a4ea8, 0xa85a5a, 0x4ea88a, 0xa8975a, 0x5a82a8, 0x8a5aa8];
+  const layout = [
+    [-24, -85, 5, 5, 1.8], [-14, -70, 5, 5, 2.6], [-4, -78, 4, 4, 3.6],
+    [22, -60, 6, 5, 2.0], [30, -45, 5, 5, 3.2], [16, -32, 4, 4, 4.4],
+    [-28, -20, 5, 5, 2.2], [-30, -3, 6, 6, 3.4], [-18, 10, 4, 4, 4.6],
+    [26, 5, 5, 5, 1.6], [34, 22, 5, 5, 2.8], [20, 38, 4, 4, 3.8],
+    [-22, 45, 6, 5, 2.4], [-8, 62, 5, 5, 3.6], [10, 75, 4, 4, 4.8],
+    [-30, 85, 5, 5, 2.0],
+  ];
+  layout.forEach((b, i) => addCtfPlatform(b[0], b[1], b[2], b[3], b[4], palette[i % palette.length]));
+}
+
+// Switch which arena is visible/active for collision + spawn-bound purposes
+function setArenaMode(mode) {
+  const isCtf = mode === 'ctf';
+  mainArenaGroup.visible = !isCtf;
+  ctfArenaGroup.visible = isCtf;
+  arenaHalf = isCtf ? CTF_ARENA : ARENA;
+  activeObstacles = isCtf ? ctfObstacles : obstacles;
 }
 
 // ---------- Player ----------
@@ -720,7 +823,7 @@ document.addEventListener('pointerlockchange', () => {
   running = locked && !gameOver;
   // Show the "Paused" overlay whenever the mouse unlocks mid-game (but not for the shop)
   const pause = document.getElementById('pause-screen');
-  if (started && !gameOver && !shopOpen && !adminOpen && !locked) pause.classList.remove('hidden');
+  if (started && !gameOver && !shopOpen && !adminOpen && !ctfInterstitial && !locked) pause.classList.remove('hidden');
   else pause.classList.add('hidden');
 });
 document.addEventListener('mousemove', e => {
@@ -821,11 +924,11 @@ function updateProjectiles(dt) {
         lastDamageTime = clock.elapsedTime;
         updateHealthHUD();
         damageFlash();
-        if (player.health <= 0) endGame();
+        if (player.health <= 0) { ctfActive ? ctfPlayerDied() : endGame(); }
       }
     }
     // despawn out of bounds
-    if (Math.abs(p.m.position.x) > ARENA || Math.abs(p.m.position.z) > ARENA || p.m.position.y < 0) dead = true;
+    if (Math.abs(p.m.position.x) > arenaHalf || Math.abs(p.m.position.z) > arenaHalf || p.m.position.y < 0) dead = true;
     if (dead) { scene.remove(p.m); projectiles.splice(i, 1); }
   }
 }
@@ -1101,7 +1204,7 @@ function headBottomY(head) {
   return head.position.y + head.geometry.boundingBox.min.y;
 }
 
-function spawnEnemy() {
+function spawnEnemy(posOverride) {
   const g = new THREE_.Group();
   const hue = 0xff4d6d;
   const mat = new THREE_.MeshStandardMaterial({ color: hue, flatShading: true, roughness: .8 });
@@ -1126,14 +1229,10 @@ function spawnEnemy() {
   barBg.position.y = 2.8; barFg.position.y = 2.8; barFg.position.z = 0.01;
   g.add(barBg, barFg);
 
-  // spawn at random edge
+  // spawn at random edge (or a caller-supplied position, e.g. scattered across the CTF arena)
   let sx, sz;
-  do {
-    const edge = Math.floor(Math.random()*4);
-    const r = (Math.random()*0.7 + 0.15) * ARENA*2 - ARENA;
-    if (edge===0){sx=-ARENA+4; sz=r;} else if(edge===1){sx=ARENA-4; sz=r;}
-    else if(edge===2){sx=r; sz=-ARENA+4;} else {sx=r; sz=ARENA-4;}
-  } while (Math.hypot(sx,sz) < 12);
+  if (posOverride) { sx = posOverride.x; sz = posOverride.z; }
+  else { const p = edgeSpawn(); sx = p.x; sz = p.z; }
   g.position.set(sx, 0, sz);
 
   const maxHp = 60 + (wave-1)*18;
@@ -1150,20 +1249,31 @@ function spawnEnemy() {
   aliveCount++;
 }
 
-// pick a random edge spawn position (>=12 units from center)
+// pick a random edge spawn position (>=12 units from center) of whichever arena is active
 function edgeSpawn() {
   let sx, sz;
   do {
     const edge = Math.floor(Math.random()*4);
-    const r = (Math.random()*0.7 + 0.15) * ARENA*2 - ARENA;
-    if (edge===0){sx=-ARENA+4; sz=r;} else if(edge===1){sx=ARENA-4; sz=r;}
-    else if(edge===2){sx=r; sz=-ARENA+4;} else {sx=r; sz=ARENA-4;}
+    const r = (Math.random()*0.7 + 0.15) * arenaHalf*2 - arenaHalf;
+    if (edge===0){sx=-arenaHalf+4; sz=r;} else if(edge===1){sx=arenaHalf-4; sz=r;}
+    else if(edge===2){sx=r; sz=-arenaHalf+4;} else {sx=r; sz=arenaHalf-4;}
   } while (Math.hypot(sx,sz) < 12);
   return { x: sx, z: sz };
 }
 
+// scatter a point anywhere across the active arena, away from the CTF base
+function scatterSpawn() {
+  let x, z, tries = 0;
+  do {
+    x = (Math.random()*2 - 1) * (arenaHalf - 15);
+    z = (Math.random()*2 - 1) * (arenaHalf - 15);
+    tries++;
+  } while (tries < 15 && Math.hypot(x - CTF_BASE.x, z - CTF_BASE.z) < 25);
+  return { x, z };
+}
+
 // A ranged skeleton: bone-white, keeps its distance and fires projectiles (15 dmg each)
-function spawnSkeleton() {
+function spawnSkeleton(posOverride) {
   const g = new THREE_.Group();
   const bone = new THREE_.MeshStandardMaterial({ color: 0xe8e6d8, flatShading: true, roughness: .9 });
   const socketMat = new THREE_.MeshBasicMaterial({ color: 0x111111 });
@@ -1193,7 +1303,7 @@ function spawnSkeleton() {
   barBg.position.y = 2.7; barFg.position.y = 2.7; barFg.position.z = 0.01;
   g.add(barBg, barFg);
 
-  const p = edgeSpawn();
+  const p = posOverride || edgeSpawn();
   g.position.set(p.x, 0, p.z);
 
   const maxHp = 40 + (wave-1)*12;
@@ -1212,9 +1322,9 @@ function spawnSkeleton() {
 }
 
 // choose which enemy type to spawn for a normal wave slot
-function spawnWaveEnemy() {
-  if (wave >= 2 && Math.random() < 0.4) spawnSkeleton();
-  else spawnEnemy();
+function spawnWaveEnemy(posOverride) {
+  if (wave >= 2 && Math.random() < 0.4) spawnSkeleton(posOverride);
+  else spawnEnemy(posOverride);
 }
 
 // A big, menacing boss: dark purple, horns, glowing eyes, ~2.5x scale
@@ -1284,6 +1394,117 @@ function updateBossHUD() {
   } else {
     hud.classList.add('hidden');
   }
+}
+
+// ---------- Capture the Flag (singleplayer) ----------
+let ctfActive = false, ctfRestarting = false, ctfInterstitial = false;
+let ctfLevel = 1, ctfFlagsCaptured = 0, ctfFlagsNeeded = 3;
+let ctfFlagMesh = null, ctfFlagPos = null, ctfCarrying = false;
+
+function spawnCtfFlag() {
+  if (ctfFlagMesh) { scene.remove(ctfFlagMesh); ctfFlagMesh = null; }
+  const x = (Math.random()*2 - 1) * (CTF_ARENA - 40);
+  const z = CTF_ARENA - 15;
+  ctfFlagPos = { x, z };
+
+  const g = new THREE_.Group();
+  const pole = new THREE_.Mesh(new THREE_.CylinderGeometry(0.1, 0.1, 4, 8),
+    new THREE_.MeshStandardMaterial({ color: 0xcccccc, flatShading: true, metalness: .4, roughness: .5 }));
+  pole.position.y = 2; g.add(pole);
+  const cloth = new THREE_.Mesh(new THREE_.PlaneGeometry(1.4, 0.9),
+    new THREE_.MeshStandardMaterial({ color: 0xffd479, flatShading: true, side: THREE_.DoubleSide }));
+  cloth.position.set(0.7, 3.3, 0);
+  g.add(cloth);
+  g.userData.cloth = cloth;
+  const light = new THREE_.PointLight(0xffd479, 3, 20);
+  light.position.y = 3.5; g.add(light);
+
+  g.position.set(x, 0, z);
+  scene.add(g);
+  ctfFlagMesh = g;
+}
+
+function updateCtfHUD() {
+  document.getElementById('wave').textContent =
+    'Level ' + ctfLevel + '  🚩 ' + ctfFlagsCaptured + '/' + ctfFlagsNeeded + (ctfCarrying ? '  — RETURN TO BASE!' : '');
+}
+
+function updateCtf(dt) {
+  if (!ctfActive) return;
+  if (ctfFlagMesh) ctfFlagMesh.userData.cloth.rotation.y = Math.sin(clock.elapsedTime * 3) * 0.4;
+
+  const p = camera.position;
+  if (!ctfCarrying && ctfFlagMesh) {
+    if (Math.hypot(p.x - ctfFlagPos.x, p.z - ctfFlagPos.z) < 3) {
+      ctfCarrying = true;
+      scene.remove(ctfFlagMesh); ctfFlagMesh = null;
+      updateCtfHUD();
+      showBanner('🚩 FLAG TAKEN — RETURN TO BASE!', '#ffd479');
+    }
+  } else if (ctfCarrying) {
+    if (Math.hypot(p.x - CTF_BASE.x, p.z - CTF_BASE.z) < 5) {
+      ctfCarrying = false;
+      ctfFlagsCaptured++;
+      updateCtfHUD();
+      if (ctfFlagsCaptured >= ctfFlagsNeeded) {
+        ctfLevelComplete();
+      } else {
+        showBanner('🚩 FLAG CAPTURED! (' + ctfFlagsCaptured + '/' + ctfFlagsNeeded + ')', '#7ef0a8');
+        spawnCtfFlag();
+      }
+    }
+  }
+}
+
+function startCtfLevel(n) {
+  ctfLevel = n;
+  ctfFlagsCaptured = 0;
+  ctfFlagsNeeded = 2 + n;
+  ctfCarrying = false;
+  ctfActive = true;
+  wave = n;   // reuse the existing HP/speed/damage scaling formulas, which key off `wave`
+
+  enemies.forEach(e => scene.remove(e.group));
+  enemies.length = 0;
+  clearProjectiles();
+  aliveCount = 0; toSpawn = 0; waveActive = false;
+
+  setArenaMode('ctf');
+  camera.position.set(CTF_BASE.x, PLAYER_HEIGHT, CTF_BASE.z);
+  player.health = 100; player.vel.set(0,0,0);
+  player.yaw = Math.PI; player.pitch = 0;   // face +Z, into the arena toward the flag (not the back wall)
+  lastDamageTime = clock.elapsedTime;
+  updateHealthHUD();
+
+  spawnCtfFlag();
+
+  const count = 10 + n * 5;
+  for (let i = 0; i < count; i++) {
+    setTimeout(() => { if (ctfActive) spawnWaveEnemy(scatterSpawn()); }, i * 250);
+  }
+
+  document.getElementById('boss-hud').classList.add('hidden');
+  updateCtfHUD();
+  showBanner('LEVEL ' + n + ' — CAPTURE ' + ctfFlagsNeeded + ' FLAGS', '#7ef0a8');
+}
+
+function ctfPlayerDied() {
+  if (ctfRestarting) return;
+  ctfRestarting = true;
+  ctfActive = false;
+  showBanner('☠ YOU DIED — RESTARTING LEVEL ' + ctfLevel, '#ff5252');
+  setTimeout(() => { ctfRestarting = false; startCtfLevel(ctfLevel); }, 1800);
+}
+
+function ctfLevelComplete() {
+  ctfActive = false;
+  ctfInterstitial = true;
+  showBanner('🏆 LEVEL ' + ctfLevel + ' COMPLETE!', '#7ef0a8');
+  document.exitPointerLock();
+  document.getElementById('ctf-complete-sub').textContent = 'Captured ' + ctfFlagsNeeded + ' flags on Level ' + ctfLevel;
+  setTimeout(() => {
+    document.getElementById('ctf-complete-screen').classList.remove('hidden');
+  }, 1200);
 }
 
 function startWave() {
@@ -1379,22 +1600,45 @@ function flashWaveBanner() {
 }
 
 // ---------- Collision ----------
-function collideMove(pos, dx, dz) {
+// Jump-on-top-of platforms (CTF only): unlike regular obstacles, these only block
+// movement below their top surface — once your feet reach the top you walk freely across it.
+const ctfPlatforms = []; // {min:{x,z}, max:{x,z}, top}
+function platformTopAt(x, z) {
+  let top = 0;
+  for (const pf of ctfPlatforms) {
+    if (x > pf.min.x && x < pf.max.x && z > pf.min.z && z < pf.max.z && pf.top > top) top = pf.top;
+  }
+  return top;
+}
+
+function collideMove(pos, dx, dz, feetY = 0) {
   // try X then Z separately for wall sliding
   let nx = pos.x + dx, nz = pos.z + dz;
   const r = PLAYER_RADIUS;
-  const bound = ARENA - 1.2;
+  const bound = arenaHalf - 1.2;
   nx = Math.max(-bound, Math.min(bound, nx));
   nz = Math.max(-bound, Math.min(bound, nz));
-  for (const o of obstacles) {
+  for (const o of activeObstacles) {
     // X axis
     if (nx + r > o.min.x && nx - r < o.max.x && pos.z + r > o.min.z && pos.z - r < o.max.z) {
       nx = pos.x;
     }
   }
-  for (const o of obstacles) {
+  for (const o of activeObstacles) {
     if (nx + r > o.min.x && nx - r < o.max.x && nz + r > o.min.z && nz - r < o.max.z) {
       nz = pos.z;
+    }
+  }
+  if (arenaHalf === CTF_ARENA) {
+    for (const pf of ctfPlatforms) {
+      if (feetY < pf.top - 0.1) {
+        if (nx + r > pf.min.x && nx - r < pf.max.x && pos.z + r > pf.min.z && pos.z - r < pf.max.z) nx = pos.x;
+      }
+    }
+    for (const pf of ctfPlatforms) {
+      if (feetY < pf.top - 0.1) {
+        if (nx + r > pf.min.x && nx - r < pf.max.x && nz + r > pf.min.z && nz - r < pf.max.z) nz = pos.z;
+      }
     }
   }
   pos.x = nx; pos.z = nz;
@@ -1417,7 +1661,7 @@ function update(dt) {
   if (keys[b.right])   move.add(right);
   if (keys[b.left])    move.sub(right);
   if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
-  collideMove(camera.position, move.x, move.z);
+  collideMove(camera.position, move.x, move.z, camera.position.y - PLAYER_HEIGHT);
 
   // gravity (Glider ability = gentle slow-fall while active and airborne)
   let gravity = 22;
@@ -1427,8 +1671,10 @@ function update(dt) {
   }
   player.vel.y -= gravity * dt;
   camera.position.y += player.vel.y * dt;
-  if (camera.position.y <= PLAYER_HEIGHT) {
-    camera.position.y = PLAYER_HEIGHT; player.vel.y = 0;
+  const standTop = arenaHalf === CTF_ARENA ? platformTopAt(camera.position.x, camera.position.z) : 0;
+  const floorY = standTop + PLAYER_HEIGHT;
+  if (camera.position.y <= floorY) {
+    camera.position.y = floorY; player.vel.y = 0;
     player.onGround = true; gliderActive = false;
     // start the air-jump cooldown once you land after using it
     if (airJumps > 0 && !ADMIN.noCd) {
@@ -1559,7 +1805,7 @@ function update(dt) {
             lastDamageTime = clock.elapsedTime;
             updateHealthHUD();
             damageFlash();
-            if (player.health <= 0) { endGame(); }
+            if (player.health <= 0) { ctfActive ? ctfPlayerDied() : endGame(); }
           }
         }
       }
@@ -1576,6 +1822,8 @@ function update(dt) {
     waveActive = false;
     openShop();
   }
+
+  updateCtf(dt);
 }
 
 // ---------- Abilities HUD ----------
@@ -1766,7 +2014,7 @@ function applyAdminToggle(key) {
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
-  if (running && !gameOver) update(dt);
+  if (running && !gameOver && !ctfRestarting) update(dt);
   renderer.render(scene, camera);
   if (shopOpen && shopThumbs.length) {
     shopThumbs.forEach(t => { t.wrapper.rotation.y += dt * 0.9; t.renderer.render(t.scene, t.camera); });
@@ -1936,9 +2184,11 @@ function startGame() {
   document.getElementById('boss-hud').classList.add('hidden');
   document.getElementById('boss-banner').classList.add('hidden');
   document.getElementById('leaderboard-screen').classList.add('hidden');
+  document.getElementById('ctf-complete-screen').classList.add('hidden');
   document.getElementById('gamemode-modal').classList.remove('active');
   lastRunEntry = null;
   started = true; shopOpen = false;
+  ctfActive = false; ctfRestarting = false; ctfInterstitial = false;
   // reset cheats (per-game only)
   adminOpen = false; ADMIN.godMode = false; ADMIN.infAmmo = false; ADMIN.noCd = false;
   // reset enemies / waves
@@ -1964,11 +2214,16 @@ function startGame() {
   updateHealthHUD(); updateAmmoHUD(); updateCoinsHUD();
   gameOver = false;
   lockPointer();
-  // Start bot or multiplayer mode
+  // Start bot, multiplayer, or CTF mode
   if (lobbyState.isMultiplayer) {
     addChatMessage('System', 'Match started with ' + lobbyState.mockPlayers.length + ' players!');
   }
-  startWave();
+  if (lobbyState.gamemode === 'ctf') {
+    startCtfLevel(1);
+  } else {
+    setArenaMode('main');
+    startWave();
+  }
 }
 
 let lastRunEntry = null;   // the leaderboard entry created this run (for live name edits)
@@ -2008,7 +2263,23 @@ document.getElementById('lobby-settings').addEventListener('click', () => openLo
 // Gamemode selection
 document.getElementById('gamemode-bots').addEventListener('click', () => selectGamemode('bots'));
 document.getElementById('gamemode-multiplayer').addEventListener('click', () => selectGamemode('multiplayer'));
+document.getElementById('gamemode-ctf').addEventListener('click', () => selectGamemode('ctf'));
 document.getElementById('gamemode-cancel').addEventListener('click', closeGamemodeSelection);
+
+// CTF level-complete screen wiring
+document.getElementById('ctf-next-level-btn').addEventListener('click', () => {
+  document.getElementById('ctf-complete-screen').classList.add('hidden');
+  ctfInterstitial = false;
+  startCtfLevel(ctfLevel + 1);
+  lockPointer();
+});
+document.getElementById('ctf-menu-btn').addEventListener('click', () => {
+  document.getElementById('ctf-complete-screen').classList.add('hidden');
+  ctfInterstitial = false;
+  ctfActive = false;
+  setArenaMode('main');
+  openLobby();
+});
 
 // Chat input
 document.getElementById('chat-input').addEventListener('keypress', (e) => {
