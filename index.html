@@ -818,6 +818,13 @@ function lockPointer() {
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   renderer.domElement.requestPointerLock();
 }
+// Browsers enforce a short cooldown before re-granting pointer lock right after it was
+// released (e.g. clicking Play again quickly after a game-over/level-complete screen).
+// Without this, that request is silently rejected and the game looks "unresponsive"
+// (menus transition fine, but mouse-look never engages). Retry once the cooldown passes.
+document.addEventListener('pointerlockerror', () => {
+  setTimeout(() => { if (started && !gameOver) lockPointer(); }, 1200);
+});
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === renderer.domElement;
   running = locked && !gameOver;
@@ -1456,6 +1463,7 @@ function updateCtf(dt) {
   }
 }
 
+let ctfSpawnTimer = null;
 function startCtfLevel(n) {
   ctfLevel = n;
   ctfFlagsCaptured = 0;
@@ -1478,10 +1486,10 @@ function startCtfLevel(n) {
 
   spawnCtfFlag();
 
-  const count = 10 + n * 5;
-  for (let i = 0; i < count; i++) {
-    setTimeout(() => { if (ctfActive) spawnWaveEnemy(scatterSpawn()); }, i * 250);
-  }
+  // continuous drip: one enemy every second for as long as the level is active, no cap
+  clearInterval(ctfSpawnTimer);
+  spawnWaveEnemy(scatterSpawn());
+  ctfSpawnTimer = setInterval(() => { if (ctfActive) spawnWaveEnemy(scatterSpawn()); }, 1000);
 
   document.getElementById('boss-hud').classList.add('hidden');
   updateCtfHUD();
@@ -1492,6 +1500,7 @@ function ctfPlayerDied() {
   if (ctfRestarting) return;
   ctfRestarting = true;
   ctfActive = false;
+  clearInterval(ctfSpawnTimer);
   showBanner('☠ YOU DIED — RESTARTING LEVEL ' + ctfLevel, '#ff5252');
   setTimeout(() => { ctfRestarting = false; startCtfLevel(ctfLevel); }, 1800);
 }
@@ -1499,6 +1508,7 @@ function ctfPlayerDied() {
 function ctfLevelComplete() {
   ctfActive = false;
   ctfInterstitial = true;
+  clearInterval(ctfSpawnTimer);
   showBanner('🏆 LEVEL ' + ctfLevel + ' COMPLETE!', '#7ef0a8');
   document.exitPointerLock();
   document.getElementById('ctf-complete-sub').textContent = 'Captured ' + ctfFlagsNeeded + ' flags on Level ' + ctfLevel;
