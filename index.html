@@ -864,7 +864,10 @@ document.addEventListener('keydown', e => {
   }
   if (e.code === settings.bindings.reload) reload();
   // jump + double-jump (edge-triggered; ignore key auto-repeat)
-  if (e.code === settings.bindings.jump && !e.repeat) { sliding = false; doJump(); }
+  if (e.code === settings.bindings.jump && !e.repeat) {
+    if (sliding) { camera.position.y += (PLAYER_HEIGHT - SLIDE_HEIGHT); sliding = false; }
+    doJump();
+  }
   if (e.code === settings.bindings.aim && !e.repeat) toggleAim();
   // abilities
   if (e.code === ABILITIES.speed.key) activateAbility('speed');
@@ -983,12 +986,12 @@ const BOSSES = {
     name: 'THE WARLORD', icon: '👹', desc: 'Melee bruiser. Telegraphs a ground-slam AoE.',
     hp: 7000, speed: 18,
     specialRange: 14, specialCd: 5.5, telegraphTime: 0.8, activeTime: 0.15,
-    slamRadius: 19.5, specialDmg: 35,
+    slamRadius: 19.5, specialDmg: 19,
     coinReward: 900, trophyName: "Warlord's Cleaver",
   },
   skitterfang: {
     name: 'SKITTERFANG', icon: '💀', desc: 'Ranged skirmisher. Telegraphs a 5-shot barrage.',
-    hp: 5000, speed: 19, fireCd: 1.5, preferred: 20,
+    hp: 5000, speed: 19, fireCd: 0.6, preferred: 20,
     specialRange: 30, specialCd: 6, telegraphTime: 0.6, activeTime: 0.1,
     specialDmg: 0, coinReward: 850, trophyName: "Skitterfang's Bone Repeater",
   },
@@ -996,7 +999,7 @@ const BOSSES = {
     name: 'THE REAPER', icon: '🗡️', desc: 'Fast striker. Telegraphs a line charge dash.',
     hp: 5500, speed: 15,
     specialRange: 26, specialCd: 2.5, telegraphTime: 0.7, activeTime: 0.35, dashSpeed: 58,
-    specialDmg: 42, coinReward: 950, trophyName: "Reaper's Scythe Rifle",
+    specialDmg: 22, coinReward: 950, trophyName: "Reaper's Scythe Rifle",
   },
 };
 const TROPHY_HOTKEYS = { '1': 'warlord', '2': 'skitterfang', '3': 'reaper' };   // Shift+1/2/3
@@ -1036,14 +1039,14 @@ function spawnExplosion(pos, radius) {
 // ---------- Enemy projectiles (skeleton shots, 15 dmg each) ----------
 const PROJECTILE_DMG = 15;
 const projectiles = [];
-function spawnEnemyProjectile(e, angleOffset = 0) {
+function spawnEnemyProjectile(e, angleOffset = 0, dmg = PROJECTILE_DMG) {
   const from = e.group.position.clone(); from.y = 1.6;
   const dir = new THREE_.Vector3().subVectors(camera.position, from).normalize();
   if (angleOffset) dir.applyAxisAngle(new THREE_.Vector3(0, 1, 0), angleOffset);
   const m = new THREE_.Mesh(new THREE_.SphereGeometry(0.22, 8, 8),
     new THREE_.MeshBasicMaterial({ color: 0x8bff5a }));
   m.position.copy(from); scene.add(m);
-  projectiles.push({ m, vel: dir.multiplyScalar(34), life: 0 });
+  projectiles.push({ m, vel: dir.multiplyScalar(34), life: 0, dmg });
 }
 function clearProjectiles() { projectiles.forEach(p => scene.remove(p.m)); projectiles.length = 0; }
 function updateProjectiles(dt) {
@@ -1056,7 +1059,7 @@ function updateProjectiles(dt) {
     if (!dead && p.m.position.distanceTo(camera.position) < 1.1) {
       dead = true;
       if (!ADMIN.godMode) {
-        player.health -= PROJECTILE_DMG;
+        player.health -= p.dmg;
         lastDamageTime = clock.elapsedTime;
         updateHealthHUD();
         damageFlash();
@@ -1498,7 +1501,7 @@ function spawnSkeleton(posOverride) {
     group: g, hitMesh: body, alive: true, hp: maxHp, maxHp,
     speed, barFg, body, legL, legR, head: skull, headBottomY: headBottomY(skull),
     lastAttack: 0, walkPhase: Math.random()*6.28,
-    isRanged: true, fireCd: 1.6, preferred: 18,
+    isRanged: true, fireCd: 0.65, preferred: 18,
   };
   body.userData.enemy = enemy;
   skull.userData.enemy = enemy; skull.userData.isHead = true;
@@ -1764,7 +1767,7 @@ function executeBossSpecial(e, ppos) {
     }
     showBanner(dodged ? '⤴ DODGED!' : '💥 GROUND SLAM', dodged ? '#7ef0a8' : '#ff5252');
   } else if (e.bossType === 'skitterfang') {
-    [-0.3, -0.15, 0, 0.15, 0.3].forEach(a => spawnEnemyProjectile(e, a));
+    [-0.3, -0.15, 0, 0.15, 0.3].forEach(a => spawnEnemyProjectile(e, a, 8));
     showBanner('☠ BARRAGE', '#ff9b4a');
   } else if (e.bossType === 'reaper') {
     e.specialDir = new THREE_.Vector3(ppos.x - e.group.position.x, 0, ppos.z - e.group.position.z).normalize();
@@ -2308,7 +2311,7 @@ function update(dt) {
         if (!outOfReach && clock.elapsedTime - e.lastAttack > 0.8) {
           e.lastAttack = clock.elapsedTime;
           if (!ADMIN.godMode) {
-            player.health -= e.isBoss ? (24 + wave * 2) : (8 + wave);
+            player.health -= e.bossType ? 14 : (e.isBoss ? (24 + wave * 2) : (8 + wave));
             lastDamageTime = clock.elapsedTime;
             updateHealthHUD();
             damageFlash();
