@@ -1077,6 +1077,11 @@ function buildGunModel(w) {
   const steelMat  = new THREE_.MeshStandardMaterial({ color: 0x6b7280, flatShading: true, roughness: .35, metalness: .6 });
   const darkMat   = new THREE_.MeshStandardMaterial({ color: 0x14151c, flatShading: true, roughness: .7,  metalness: .3 });
   const accentMat = new THREE_.MeshStandardMaterial({ color: w.color,  flatShading: true, emissive: w.color, emissiveIntensity: .35 });
+  const wornSteelMat = new THREE_.MeshStandardMaterial({ color: 0x4a4d57, flatShading: true, roughness: .75, metalness: .55 });
+  const boneMat      = new THREE_.MeshStandardMaterial({ color: 0xd9cdb0, flatShading: true, roughness: .85, metalness: .05 });
+  const chitinMat    = new THREE_.MeshStandardMaterial({ color: 0x2b3324, flatShading: true, roughness: .6,  metalness: .2 });
+  const leatherMat   = new THREE_.MeshStandardMaterial({ color: 0x3b2a1d, flatShading: true, roughness: .9,  metalness: 0 });
+  const runeMat      = new THREE_.MeshStandardMaterial({ color: w.color,  flatShading: true, emissive: w.color, emissiveIntensity: .18 });
 
   const addBox = (sx, sy, sz, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
     const m = new THREE_.Mesh(new THREE_.BoxGeometry(sx, sy, sz), mat);
@@ -1091,7 +1096,50 @@ function buildGunModel(w) {
     m.position.set(x, y, z); m.rotation.set(rx, ry, rz); group.add(m); return m;
   };
 
-  if (w.melee) {
+  if (w.trophyOf === 'warlord') {
+    // Warlord's Cleaver — wide tapered blade, crossguard, wrapped grip, pommel
+    addBox(0.20, 0.045, 0.23, wornSteelMat, 0, 0.05, -0.435);
+    addBox(0.28, 0.045, 0.30, wornSteelMat, 0, 0.05, -0.70);
+    addBox(0.34, 0.045, 0.30, wornSteelMat, 0, 0.05, -1.00);
+    addBox(0.02, 0.052, 0.80, runeMat, 0, 0.05, -0.73);
+    addBox(0.34, 0.07, 0.09, darkMat, 0, 0.02, -0.30);
+    addCyl(0.045, 0.40, leatherMat, 0, -0.02, -0.08);
+    addRing(0.05, 0.012, wornSteelMat, 0, -0.02, -0.22);
+    addRing(0.05, 0.012, wornSteelMat, 0, -0.02, -0.08);
+    addRing(0.05, 0.012, wornSteelMat, 0, -0.02, 0.06);
+    addCyl(0.07, 0.09, wornSteelMat, 0, -0.02, 0.16);
+  } else if (w.trophyOf === 'skitterfang') {
+    // Skitterfang's Bone Repeater — segmented bone barrel, joint rings, jagged shard tips, chitin stock
+    addBox(0.16, 0.17, 0.32, chitinMat, 0, 0, -0.02);
+    addCyl(0.05, 0.16, boneMat, 0, 0.02, -0.26);
+    addRing(0.055, 0.014, boneMat, 0, 0.02, -0.20);
+    addCyl(0.042, 0.16, boneMat, 0, 0.02, -0.42);
+    addRing(0.048, 0.013, boneMat, 0, 0.02, -0.36);
+    addCyl(0.034, 0.14, boneMat, 0, 0.02, -0.56);
+    addRing(0.04, 0.012, boneMat, 0, 0.02, -0.50);
+    addBox(0.018, 0.018, 0.11, boneMat, 0.02, 0.05, -0.66, 0.2, 0, 0.15);
+    addBox(0.018, 0.018, 0.11, boneMat, -0.02, 0.05, -0.66, 0.2, 0, -0.15);
+    addBox(0.018, 0.018, 0.1, boneMat, 0, 0.06, -0.66, -0.25, 0, 0);
+    addBox(0.075, 0.26, 0.09, chitinMat, 0, -0.22, -0.05, -0.3, 0, 0);
+    addBox(0.03, 0.045, 0.05, runeMat, 0, 0.1, -0.1);
+    addBox(0.1, 0.2, 0.11, chitinMat, 0, -0.17, 0.16, 0.12, 0, 0);
+  } else if (w.trophyOf === 'reaper') {
+    // Reaper's Scythe Rifle — long rifle body, curved blood-red scythe blade, red-lensed scope
+    addBox(0.14, 0.15, 0.42, darkMat, 0, 0, -0.02);
+    addCyl(0.026, 0.62, wornSteelMat, 0, 0.02, -0.5);
+    addCyl(0.036, 0.3, darkMat, 0, 0.15, -0.16);
+    addRing(0.04, 0.012, runeMat, 0, 0.15, -0.3);
+    addRing(0.04, 0.012, runeMat, 0, 0.15, -0.02);
+    const bladeGeo = new THREE_.TorusGeometry(0.26, 0.018, 6, 20, Math.PI * 1.1);
+    const blade = new THREE_.Mesh(bladeGeo, runeMat);
+    blade.position.set(0, 0.34, -0.45);
+    blade.rotation.set(0, Math.PI / 2, Math.PI * 0.12);
+    group.add(blade);
+    addBox(0.1, 0.16, 0.34, darkMat, 0, -0.02, 0.36, 0.04, 0, 0);
+    addBox(0.02, 0.13, 0.02, wornSteelMat, -0.07, -0.09, -0.16, 0, 0, 0.4);
+    addBox(0.02, 0.13, 0.02, wornSteelMat, 0.07, -0.09, -0.16, 0, 0, -0.4);
+    addBox(0.1, 0.2, 0.12, darkMat, 0, -0.18, 0.17, 0.1, 0, 0);
+  } else if (w.melee) {
     const len = w.name === 'Sword' ? 1.1 : 0.5;
     addBox(0.07, 0.16, len, accentMat, 0, 0.05, -0.4 - len / 2);
     addBox(0.28, 0.06, 0.1, bodyMat, 0, 0.03, -0.4);
