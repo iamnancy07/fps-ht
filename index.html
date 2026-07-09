@@ -217,7 +217,7 @@
   .gamemode-content { background: radial-gradient(circle at center, rgba(30,30,45,.95), rgba(10,10,15,.98)); padding: 40px; border-radius: 16px;
                       text-align: center; max-width: 640px; border: 1px solid rgba(255,255,255,.15); }
   .gamemode-content h2 { font-size: 32px; margin-bottom: 24px; letter-spacing: 2px; }
-  .gamemode-options { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .gamemode-options { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 24px; }
   .gamemode-btn { padding: 24px 16px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); border-radius: 10px;
                   color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; transition: all .12s; text-align: center; }
   .gamemode-btn:hover { background: rgba(255,255,255,.15); border-color: rgba(255,255,255,.35); transform: translateY(-2px); }
@@ -227,6 +227,14 @@
   .gamemode-cancel { padding: 12px 24px; background: rgba(255,255,255,.1); color: #fff; border: 1px solid rgba(255,255,255,.2);
                      border-radius: 8px; cursor: pointer; font-size: 14px; transition: all .12s; }
   .gamemode-cancel:hover { background: rgba(255,255,255,.2); }
+
+  /* Boss select modal */
+  #boss-select-modal { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex; align-items: center; justify-content: center;
+                        z-index: 200; opacity: 0; pointer-events: none; transition: opacity .3s; }
+  #boss-select-modal.active { opacity: 1; pointer-events: auto; }
+  .boss-card .lock-tag { display: block; font-size: 11px; margin-top: 8px; }
+  .boss-card:not(.unlocked) .lock-tag { color: #ff9a9a; }
+  .boss-card.unlocked .lock-tag { color: #7ef0a8; }
 </style>
 </head>
 <body>
@@ -281,6 +289,7 @@
     <span><b>R</b></span><span>Sprint</span>
     <span><b>E</b></span><span>Reload</span>
     <span><b>Space</b></span><span>Jump</span>
+    <span><b>C</b></span><span>Slide</span>
     <span><b>Shift</b></span><span>Lock / unlock cursor</span>
     <span><b>Esc</b></span><span>Release mouse</span>
   </div>
@@ -357,8 +366,22 @@
         <span class="label">CAPTURE THE FLAG</span>
         <span class="desc">Fight through enemies to capture flags</span>
       </button>
+      <button class="gamemode-btn" id="gamemode-boss">
+        <span class="icon">👹</span>
+        <span class="label">BOSS FIGHT</span>
+        <span class="desc">Take down a powerful boss solo</span>
+      </button>
     </div>
     <button class="gamemode-cancel" id="gamemode-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- Boss select modal -->
+<div id="boss-select-modal">
+  <div class="gamemode-content">
+    <h2>SELECT BOSS</h2>
+    <div class="gamemode-options" id="boss-select-options"></div>
+    <button class="gamemode-cancel" id="boss-select-cancel">Cancel</button>
   </div>
 </div>
 
@@ -392,6 +415,14 @@
   <button class="btn secondary" id="ctf-menu-btn">Main Menu</button>
 </div>
 
+<!-- Boss fight complete -->
+<div id="boss-complete-screen" class="overlay hidden">
+  <h1>BOSS <span>DEFEATED</span></h1>
+  <p id="boss-complete-sub">Boss defeated!</p>
+  <button class="btn" id="boss-again-btn">Fight Again →</button>
+  <button class="btn secondary" id="boss-menu-btn">Main Menu</button>
+</div>
+
 <!-- Leaderboard (from start screen) -->
 <div id="leaderboard-screen" class="overlay hidden">
   <h1>🏆 LEADERBOARD</h1>
@@ -413,7 +444,7 @@
     </div>
     <div class="setting-sub">Controls — click a key, then press the new key to rebind</div>
     <div id="bindings"></div>
-    <div class="setting-note">Aim with the <b>Mouse</b>, shoot with <b>Left Click</b>, switch weapons with <b>1–9</b> (fixed). Tap <b>Shift</b> to lock/unlock the cursor. Abilities: <b>Q</b> Speed, <b>F</b> Glider, and press <b>Jump</b> again mid-air for Double/Triple Jump.</div>
+    <div class="setting-note">Aim with the <b>Mouse</b>, shoot with <b>Left Click</b>, switch weapons with <b>1–9</b> (fixed). Press <b>C</b> while grounded to slide forward (press <b>Jump</b> mid-slide to cancel into a jump). Trophy weapons (earned from Boss Fights): <b>Shift+1</b> Warlord's Cleaver, <b>Shift+2</b> Skitterfang's Bone Repeater, <b>Shift+3</b> Reaper's Scythe Rifle. Tap <b>Shift</b> to lock/unlock the cursor. Abilities: <b>Q</b> Speed, <b>F</b> Glider, and press <b>Jump</b> again mid-air for Double/Triple Jump.</div>
   </div>
   <div class="settings-actions">
     <button class="btn secondary" id="settings-reset">Reset to Defaults</button>
@@ -685,6 +716,10 @@ function setArenaMode(mode) {
 
 // ---------- Player ----------
 const PLAYER_HEIGHT = 1.7, PLAYER_RADIUS = 0.6;
+// ---- Slide (C key): free movement burst, no cooldown/purchase ----
+const SLIDE_HEIGHT = 1.0, SLIDE_DURATION = 1.65, SLIDE_SPEED_START = 24, SLIDE_SPEED_END = 12;
+let sliding = false, slideT = 0;
+const slideDir = { x: 0, z: 0 };
 const MAX_HEALTH = 100;
 const REGEN_DELAY = 5;   // seconds without damage before regen starts
 const REGEN_RATE = 5;    // health per second
@@ -731,6 +766,15 @@ function loadSettings() {
   return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 }
 function saveSettings() { localStorage.setItem('arenaFpsSettings', JSON.stringify(settings)); }
+
+// ---------- Boss trophy unlocks (persisted locally, survive across games) ----------
+function loadBossUnlocks() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('arenaFpsBossUnlocks'));
+    return { warlord: false, skitterfang: false, reaper: false, ...(saved || {}) };
+  } catch (e) { return { warlord: false, skitterfang: false, reaper: false }; }
+}
+function saveBossUnlocks(unlocks) { localStorage.setItem('arenaFpsBossUnlocks', JSON.stringify(unlocks)); }
 function getSens() {
   const fovScale = camera ? camera.fov / BASE_FOV : 1;   // narrower FOV while aiming = lower turn speed
   return settings.sensitivity * 0.0001 * fovScale;
@@ -806,10 +850,21 @@ document.addEventListener('keydown', e => {
   if (!running) return;
   // weapon switch via number keys 1–9 (only equips owned weapons)
   const dm = e.code.match(/^Digit([1-9])$/);
-  if (dm) switchWeapon(+dm[1] - 1);
+  if (dm) {
+    if (e.shiftKey) {
+      // Shift+1/2/3: jump straight to a trophy weapon (only equips it if that boss is unlocked)
+      const bossKey = TROPHY_HOTKEYS[dm[1]];
+      if (bossKey) {
+        const idx = WEAPONS.findIndex(w => w.trophyOf === bossKey);
+        if (idx >= 0) switchWeapon(idx);
+      }
+    } else {
+      switchWeapon(+dm[1] - 1);
+    }
+  }
   if (e.code === settings.bindings.reload) reload();
   // jump + double-jump (edge-triggered; ignore key auto-repeat)
-  if (e.code === settings.bindings.jump && !e.repeat) doJump();
+  if (e.code === settings.bindings.jump && !e.repeat) { sliding = false; doJump(); }
   if (e.code === settings.bindings.aim && !e.repeat) toggleAim();
   // abilities
   if (e.code === ABILITIES.speed.key) activateAbility('speed');
@@ -915,8 +970,36 @@ const WEAPONS = [
   { name: 'Sniper',         desc: 'One-shot, slow',        dmg: 150,fireRate: 1.2,  auto: false, pellets: 1, spread: 0.0,   mag: 5,  ammo: 5,  reload: 2.0, color: 0xffffff, recoil: 0.06,  owned: false, price: 1200, zoomFov: 12, scopeOverlay: true },
   { name: 'Railgun',        desc: 'Devastating beam',      dmg: 120,fireRate: 1.1,  auto: false, pellets: 1, spread: 0.0,   mag: 4,  ammo: 4,  reload: 1.8, color: 0xc98bff, recoil: 0.07,  owned: false, price: 1800, zoomFov: 20, scopeOverlay: true },
   { name: 'Rocket Launcher',desc: 'One-shot direct hit + splash', dmg: 250, fireRate: 1.3, auto: false, pellets: 1, spread: 0.005, mag: 3, ammo: 3, reload: 2.2, color: 0xff5252, recoil: 0.08, owned: false, price: 2200, aoe: true, aoeRadius: 7, zoomFov: 55 },
+  // Trophy weapons: cannot be bought — become permanently owned once the matching boss is defeated (see loadBossUnlocks).
+  { name: "Warlord's Cleaver", desc: 'Trophy sword — colossal swing damage', melee: true, range: 5.2, dmg: 100, fireRate: 0.5, color: 0x6a1b9a, owned: false, price: 0, trophyOf: 'warlord' },
+  { name: "Skitterfang's Bone Repeater", desc: 'Trophy SMG — full-auto bone shards, infinite ammo', dmg: 17, fireRate: 0.075, auto: true, pellets: 1, spread: 0.03, mag: 30, ammo: 30, reload: 1.3, color: 0xcfe8c8, recoil: 0.02, owned: false, price: 0, zoomFov: 55, trophyOf: 'skitterfang', infiniteAmmo: true },
+  { name: "Reaper's Scythe Rifle", desc: 'Trophy sniper — one-shot, blood-red scope', dmg: 155, fireRate: 1.2, auto: false, pellets: 1, spread: 0.0, mag: 5, ammo: 5, reload: 2.0, color: 0xb81d1d, recoil: 0.06, owned: false, price: 0, zoomFov: 12, scopeOverlay: true, trophyOf: 'reaper' },
 ];
 let curWeapon = 1;   // start on Pistol
+
+// ---------- Boss Fight gamemode: 3 selectable bosses, each with one telegraphed special attack ----------
+const BOSSES = {
+  warlord: {
+    name: 'THE WARLORD', icon: '👹', desc: 'Melee bruiser. Telegraphs a ground-slam AoE.',
+    hp: 7000, speed: 18,
+    specialRange: 14, specialCd: 5.5, telegraphTime: 0.8, activeTime: 0.15,
+    slamRadius: 19.5, specialDmg: 35,
+    coinReward: 900, trophyName: "Warlord's Cleaver",
+  },
+  skitterfang: {
+    name: 'SKITTERFANG', icon: '💀', desc: 'Ranged skirmisher. Telegraphs a 5-shot barrage.',
+    hp: 5000, speed: 19, fireCd: 1.5, preferred: 20,
+    specialRange: 30, specialCd: 6, telegraphTime: 0.6, activeTime: 0.1,
+    specialDmg: 0, coinReward: 850, trophyName: "Skitterfang's Bone Repeater",
+  },
+  reaper: {
+    name: 'THE REAPER', icon: '🗡️', desc: 'Fast striker. Telegraphs a line charge dash.',
+    hp: 5500, speed: 15,
+    specialRange: 26, specialCd: 2.5, telegraphTime: 0.7, activeTime: 0.35, dashSpeed: 58,
+    specialDmg: 42, coinReward: 950, trophyName: "Reaper's Scythe Rifle",
+  },
+};
+const TROPHY_HOTKEYS = { '1': 'warlord', '2': 'skitterfang', '3': 'reaper' };   // Shift+1/2/3
 let lastShot = 0, reloading = false, reloadEnd = 0;
 let viewModel, recoilOffset = 0, meleeSwing = 0;
 let shopThumbs = [];   // spinning 3D preview renderers shown in the shop list
@@ -953,9 +1036,10 @@ function spawnExplosion(pos, radius) {
 // ---------- Enemy projectiles (skeleton shots, 15 dmg each) ----------
 const PROJECTILE_DMG = 15;
 const projectiles = [];
-function spawnEnemyProjectile(e) {
+function spawnEnemyProjectile(e, angleOffset = 0) {
   const from = e.group.position.clone(); from.y = 1.6;
   const dir = new THREE_.Vector3().subVectors(camera.position, from).normalize();
+  if (angleOffset) dir.applyAxisAngle(new THREE_.Vector3(0, 1, 0), angleOffset);
   const m = new THREE_.Mesh(new THREE_.SphereGeometry(0.22, 8, 8),
     new THREE_.MeshBasicMaterial({ color: 0x8bff5a }));
   m.position.copy(from); scene.add(m);
@@ -1131,7 +1215,7 @@ function renderWeaponList() {
     const el = document.createElement('div');
     el.className = 'wpn-slot' + (i === curWeapon ? ' active' : '');
     el.dataset.slot = i;
-    el.innerHTML = '<b>' + (i + 1) + '</b> ' + w.name;
+    el.innerHTML = '<b>' + (w.trophyOf ? '🏆' : (i + 1)) + '</b> ' + w.name;
     list.appendChild(el);
   });
 }
@@ -1152,9 +1236,9 @@ function tryShoot() {
 
   if (w.melee) { lastShot = t; meleeAttack(w); return; }
 
-  if (w.ammo <= 0) { reload(); return; }
+  if (w.ammo <= 0 && !w.infiniteAmmo) { reload(); return; }
   lastShot = t;
-  if (!ADMIN.infAmmo) w.ammo--;
+  if (!ADMIN.infAmmo && !w.infiniteAmmo) w.ammo--;
   updateAmmoHUD();
 
   // recoil + muzzle flash
@@ -1236,7 +1320,9 @@ function meleeAttack(w) {
       // approximate headshot: is the camera's aim pitch pointed at/above head height at this range?
       const aimY = camPos.y + dir.y * d;
       const headshot = aimY >= e.headBottomY;
-      damageEnemy(e, w.dmg, e.group.position, headshot);
+      // any melee weapon kills a boss in exactly 5 hits, regardless of the weapon's own damage stat
+      const dmg = e.isBoss ? Math.ceil(e.maxHp / 5) : w.dmg;
+      damageEnemy(e, dmg, e.group.position, headshot);
       hitAny = true;
       if (headshot) anyHeadshot = true;
       if (w.name !== 'Sword') break;   // knife = single target
@@ -1424,6 +1510,150 @@ function spawnBoss() {
   aliveCount++;
 }
 
+// ---------- Boss Fight gamemode: dedicated boss models (separate from the wave-boss above) ----------
+
+// Warlord: purple/horned bruiser, reused visual language but its own stats + Ground Slam special.
+function spawnWarlordBoss() {
+  const cfg = BOSSES.warlord;
+  const g = new THREE_.Group();
+  const mat = new THREE_.MeshStandardMaterial({ color: 0x6a1b9a, flatShading: true, roughness: .55, metalness: .25, emissive: 0x2a0a3a, emissiveIntensity: .5 });
+  const eyeMat = new THREE_.MeshBasicMaterial({ color: 0xff3b3b });
+  const hornMat = new THREE_.MeshStandardMaterial({ color: 0x141018, flatShading: true });
+
+  const body = new THREE_.Mesh(new THREE_.BoxGeometry(2.6, 3.4, 1.7), mat);
+  body.position.y = 2.7; body.castShadow = true;
+  const head = new THREE_.Mesh(new THREE_.BoxGeometry(1.8, 1.8, 1.8), mat);
+  head.position.y = 5.4; head.castShadow = true;
+  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.4, 0.4, 0.12), eyeMat);
+  const eyeR = eyeL.clone();
+  eyeL.position.set(-0.45, 5.55, 0.92); eyeR.position.set(0.45, 5.55, 0.92);
+  const hornL = new THREE_.Mesh(new THREE_.ConeGeometry(0.38, 1.3, 4), hornMat);
+  hornL.position.set(-0.6, 6.6, 0); hornL.rotation.z = 0.45;
+  const hornR = hornL.clone(); hornR.position.x = 0.6; hornR.rotation.z = -0.45;
+  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.85, 2.2, 0.85), mat);
+  const legR = legL.clone();
+  legL.position.set(-0.65, 1.1, 0); legR.position.set(0.65, 1.1, 0);
+  legL.castShadow = legR.castShadow = true;
+  g.add(body, head, eyeL, eyeR, hornL, hornR, legL, legR);
+
+  const barBg = new THREE_.Mesh(new THREE_.PlaneGeometry(3.2, 0.32), new THREE_.MeshBasicMaterial({ color: 0x220000 }));
+  const barFg = new THREE_.Mesh(new THREE_.PlaneGeometry(3.2, 0.32), new THREE_.MeshBasicMaterial({ color: 0xff5252 }));
+  barBg.position.y = 7.0; barFg.position.y = 7.0; barFg.position.z = 0.01;
+  g.add(barBg, barFg);
+
+  g.position.set(0, 0, -(ARENA - 8));
+
+  const enemy = {
+    group: g, hitMesh: body, alive: true, hp: cfg.hp, maxHp: cfg.hp,
+    speed: cfg.speed, barFg, body, legL, legR, head, headBottomY: headBottomY(head),
+    lastAttack: 0, walkPhase: Math.random() * 6.28, isBoss: true,
+    bossType: 'warlord', specialPhase: 'idle', specialTimer: 2.5, specialT: 0, baseEmissive: 0.5,
+  };
+  body.userData.enemy = enemy;
+  head.userData.enemy = enemy; head.userData.isHead = true;
+  scene.add(g);
+  enemies.push(enemy);
+  aliveCount++;
+}
+
+// Skitterfang: a scaled-up, sickly-green skeleton that keeps its distance and telegraphs a barrage.
+function spawnSkitterfangBoss() {
+  const cfg = BOSSES.skitterfang;
+  const g = new THREE_.Group();
+  const bone = new THREE_.MeshStandardMaterial({ color: 0xcfe8c8, flatShading: true, roughness: .9, emissive: 0x1a3a1a, emissiveIntensity: .3 });
+  const socketMat = new THREE_.MeshBasicMaterial({ color: 0x111111 });
+
+  const body = new THREE_.Mesh(new THREE_.BoxGeometry(0.55, 1.2, 0.35), bone);
+  body.position.y = 1.15; body.castShadow = true;
+  const pelvis = new THREE_.Mesh(new THREE_.BoxGeometry(0.5, 0.3, 0.32), bone);
+  pelvis.position.y = 0.5;
+  const skull = new THREE_.Mesh(new THREE_.BoxGeometry(0.6, 0.6, 0.6), bone);
+  skull.position.y = 2.05; skull.castShadow = true;
+  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.13,0.16,0.06), socketMat);
+  const eyeR = eyeL.clone();
+  eyeL.position.set(-0.15, 2.1, 0.31); eyeR.position.set(0.15, 2.1, 0.31);
+  const jaw = new THREE_.Mesh(new THREE_.BoxGeometry(0.4,0.12,0.4), bone);
+  jaw.position.set(0, 1.78, 0.02);
+  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.14, 1.0, 0.14), bone);
+  const armR = armL.clone();
+  armL.position.set(-0.42, 1.15, 0.1); armR.position.set(0.42, 1.15, 0.1);
+  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 0.95, 0.16), bone);
+  const legR = legL.clone();
+  legL.position.set(-0.16, 0.45, 0); legR.position.set(0.16, 0.45, 0);
+  legL.castShadow = legR.castShadow = true;
+  g.add(body, pelvis, skull, eyeL, eyeR, jaw, armL, armR, legL, legR);
+  g.scale.setScalar(2.2);   // towers over regular skeletons
+
+  const barBg = new THREE_.Mesh(new THREE_.PlaneGeometry(1.2, 0.16), new THREE_.MeshBasicMaterial({ color: 0x220000 }));
+  const barFg = new THREE_.Mesh(new THREE_.PlaneGeometry(1.2, 0.16), new THREE_.MeshBasicMaterial({ color: 0x37d67a }));
+  barBg.position.y = 2.7; barFg.position.y = 2.7; barFg.position.z = 0.01;
+  g.add(barBg, barFg);
+
+  g.position.set(0, 0, -(ARENA - 8));
+
+  const enemy = {
+    group: g, hitMesh: body, alive: true, hp: cfg.hp, maxHp: cfg.hp,
+    speed: cfg.speed, barFg, body, legL, legR, head: skull, headBottomY: headBottomY(skull) * g.scale.y,
+    lastAttack: 0, walkPhase: Math.random() * 6.28, isBoss: true,
+    isRanged: true, fireCd: cfg.fireCd, preferred: cfg.preferred,
+    bossType: 'skitterfang', specialPhase: 'idle', specialTimer: 3, specialT: 0, baseEmissive: 0.3,
+  };
+  body.userData.enemy = enemy;
+  skull.userData.enemy = enemy; skull.userData.isHead = true;
+  scene.add(g);
+  enemies.push(enemy);
+  aliveCount++;
+}
+
+// The Reaper: lean, fast, red/black striker with a scythe blade — telegraphs a line charge dash.
+function spawnReaperBoss() {
+  const cfg = BOSSES.reaper;
+  const g = new THREE_.Group();
+  const mat = new THREE_.MeshStandardMaterial({ color: 0x1a1015, flatShading: true, roughness: .5, metalness: .3, emissive: 0x5a0f0f, emissiveIntensity: .4 });
+  const eyeMat = new THREE_.MeshBasicMaterial({ color: 0xff2b2b });
+  const bladeMat = new THREE_.MeshStandardMaterial({ color: 0xb81d1d, flatShading: true, metalness: .5, roughness: .4 });
+
+  const body = new THREE_.Mesh(new THREE_.BoxGeometry(1.5, 2.6, 1.0), mat);
+  body.position.y = 2.0; body.castShadow = true;
+  const head = new THREE_.Mesh(new THREE_.BoxGeometry(1.0, 1.0, 1.0), mat);
+  head.position.y = 3.9; head.castShadow = true;
+  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.22, 0.22, 0.08), eyeMat);
+  const eyeR = eyeL.clone();
+  eyeL.position.set(-0.25, 3.95, 0.52); eyeR.position.set(0.25, 3.95, 0.52);
+  const blade = new THREE_.Mesh(new THREE_.ConeGeometry(0.5, 2.4, 3), bladeMat);
+  blade.position.set(0.95, 2.6, 0); blade.rotation.z = -0.7; blade.rotation.y = 0.3;
+  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.5, 1.7, 0.5), mat);
+  const legR = legL.clone();
+  legL.position.set(-0.4, 0.85, 0); legR.position.set(0.4, 0.85, 0);
+  legL.castShadow = legR.castShadow = true;
+  g.add(body, head, eyeL, eyeR, blade, legL, legR);
+
+  const barBg = new THREE_.Mesh(new THREE_.PlaneGeometry(2.2, 0.24), new THREE_.MeshBasicMaterial({ color: 0x220000 }));
+  const barFg = new THREE_.Mesh(new THREE_.PlaneGeometry(2.2, 0.24), new THREE_.MeshBasicMaterial({ color: 0xff5252 }));
+  barBg.position.y = 5.0; barFg.position.y = 5.0; barFg.position.z = 0.01;
+  g.add(barBg, barFg);
+
+  g.position.set(0, 0, -(ARENA - 8));
+
+  const enemy = {
+    group: g, hitMesh: body, alive: true, hp: cfg.hp, maxHp: cfg.hp,
+    speed: cfg.speed, barFg, body, legL, legR, head, headBottomY: headBottomY(head),
+    lastAttack: 0, walkPhase: Math.random() * 6.28, isBoss: true,
+    bossType: 'reaper', specialPhase: 'idle', specialTimer: 2, specialT: 0, baseEmissive: 0.4,
+  };
+  body.userData.enemy = enemy;
+  head.userData.enemy = enemy; head.userData.isHead = true;
+  scene.add(g);
+  enemies.push(enemy);
+  aliveCount++;
+}
+
+function spawnBossOfType(type) {
+  if (type === 'warlord') spawnWarlordBoss();
+  else if (type === 'skitterfang') spawnSkitterfangBoss();
+  else if (type === 'reaper') spawnReaperBoss();
+}
+
 // Big center banner used for boss warnings / announcements
 let bannerTimer = null;
 function showBanner(text, color) {
@@ -1443,8 +1673,99 @@ function updateBossHUD() {
   if (boss) {
     hud.classList.remove('hidden');
     document.getElementById('boss-fill').style.width = Math.max(0, boss.hp / boss.maxHp * 100) + '%';
+    document.getElementById('boss-name').textContent = boss.bossType ? ('☠ ' + BOSSES[boss.bossType].name) : '☠ BOSS';
   } else {
     hud.classList.add('hidden');
+  }
+}
+
+// ---------- Boss Fight special attacks: telegraph, then strike ----------
+const activeTelegraphs = [];   // ground-ring meshes not attached to any enemy group, need manual cleanup
+function clearTelegraphs() { activeTelegraphs.forEach(r => scene.remove(r)); activeTelegraphs.length = 0; }
+
+function spawnGroundTelegraph(e) {
+  const cfg = BOSSES[e.bossType];
+  const ring = new THREE_.Mesh(new THREE_.CircleGeometry(cfg.slamRadius, 32),
+    new THREE_.MeshBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: .4, side: THREE_.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(e.group.position.x, 0.06, e.group.position.z);
+  ring.scale.setScalar(0.01);
+  scene.add(ring);
+  activeTelegraphs.push(ring);
+  e.telegraphRing = ring;
+}
+
+// Called once a boss's telegraph finishes charging — apply the special's effect.
+function executeBossSpecial(e, ppos) {
+  const cfg = BOSSES[e.bossType];
+  if (e.bossType === 'warlord') {
+    const d = Math.hypot(ppos.x - e.group.position.x, ppos.z - e.group.position.z);
+    const dodged = d < cfg.slamRadius && !player.onGround;
+    if (d < cfg.slamRadius && player.onGround && !ADMIN.godMode) {
+      player.health -= cfg.specialDmg;
+      const kx = ppos.x - e.group.position.x, kz = ppos.z - e.group.position.z;
+      const kl = Math.max(0.01, Math.hypot(kx, kz));
+      player.vel.x += (kx / kl) * 14; player.vel.z += (kz / kl) * 14; player.vel.y = 8;
+      lastDamageTime = clock.elapsedTime; updateHealthHUD(); damageFlash();
+      if (player.health <= 0) endGame();
+    }
+    if (e.telegraphRing) {
+      const idx = activeTelegraphs.indexOf(e.telegraphRing);
+      if (idx >= 0) activeTelegraphs.splice(idx, 1);
+      scene.remove(e.telegraphRing); e.telegraphRing = null;
+    }
+    showBanner(dodged ? '⤴ DODGED!' : '💥 GROUND SLAM', dodged ? '#7ef0a8' : '#ff5252');
+  } else if (e.bossType === 'skitterfang') {
+    [-0.3, -0.15, 0, 0.15, 0.3].forEach(a => spawnEnemyProjectile(e, a));
+    showBanner('☠ BARRAGE', '#ff9b4a');
+  } else if (e.bossType === 'reaper') {
+    e.specialDir = new THREE_.Vector3(ppos.x - e.group.position.x, 0, ppos.z - e.group.position.z).normalize();
+    e.dashHit = false;
+    showBanner('⚡ CHARGE!', '#ff9b4a');
+  }
+}
+
+// Drives a boss's telegraph -> strike -> cooldown cycle. Runs instead of (not alongside) normal
+// movement/attack while a special is telegraphing or active — see the enemy loop in update().
+function updateBossSpecial(e, dt, ppos, dist) {
+  const cfg = BOSSES[e.bossType];
+  if (e.specialPhase === 'idle') {
+    e.specialTimer -= dt;
+    if (e.specialTimer <= 0 && dist < cfg.specialRange) {
+      e.specialPhase = 'telegraph'; e.specialT = 0;
+      if (e.bossType === 'warlord') spawnGroundTelegraph(e);
+    }
+    return;
+  }
+  if (e.specialPhase === 'telegraph') {
+    e.specialT += dt;
+    if (e.body.material.emissive) e.body.material.emissiveIntensity = e.baseEmissive + Math.min(1, e.specialT / cfg.telegraphTime) * 1.2;
+    if (e.telegraphRing) e.telegraphRing.scale.setScalar(Math.min(1, e.specialT / cfg.telegraphTime));
+    if (e.specialT >= cfg.telegraphTime) {
+      e.specialPhase = 'active'; e.specialT = 0;
+      executeBossSpecial(e, ppos);
+    }
+    return;
+  }
+  if (e.specialPhase === 'active') {
+    e.specialT += dt;
+    if (e.bossType === 'reaper' && e.specialDir) {
+      const step = cfg.dashSpeed * dt;
+      collideMove(e.group.position, e.specialDir.x * step, e.specialDir.z * step);
+      if (!e.dashHit && Math.hypot(ppos.x - e.group.position.x, ppos.z - e.group.position.z) < 2.6) {
+        e.dashHit = true;
+        if (!ADMIN.godMode) {
+          player.health -= cfg.specialDmg;
+          lastDamageTime = clock.elapsedTime; updateHealthHUD(); damageFlash();
+          if (player.health <= 0) endGame();
+        }
+      }
+    }
+    if (e.specialT >= cfg.activeTime) {
+      e.specialPhase = 'idle'; e.specialTimer = cfg.specialCd; e.specialT = 0;
+      if (e.body.material.emissive) e.body.material.emissiveIntensity = e.baseEmissive;
+    }
+    return;
   }
 }
 
@@ -1536,6 +1857,7 @@ function startCtfLevel(n) {
   setArenaMode('ctf');
   camera.position.set(CTF_BASE.x, PLAYER_HEIGHT, CTF_BASE.z);
   player.health = 100; player.vel.set(0,0,0);
+  sliding = false;
   player.yaw = Math.PI; player.pitch = 0;   // face +Z, into the arena toward the flag (not the back wall)
   lastDamageTime = clock.elapsedTime;
   updateHealthHUD();
@@ -1598,6 +1920,26 @@ function startWave() {
   }
 }
 
+// ---------- Boss Fight gamemode: a single 1v1 boss encounter, no waves ----------
+function startBossFight(type) {
+  const cfg = BOSSES[type];
+  wave = 4;   // reuses the generic minion HP/speed formulas elsewhere in the file; bosses ignore it (fixed HP)
+  enemies.forEach(e => scene.remove(e.group));
+  enemies.length = 0;
+  clearProjectiles();
+  clearTelegraphs();
+  aliveCount = 0; toSpawn = 0; waveActive = false;
+  setArenaMode('main');
+  camera.position.set(0, PLAYER_HEIGHT, ARENA - 10);
+  player.health = 100; player.vel.set(0, 0, 0);
+  player.yaw = 0; player.pitch = 0;   // face -Z, toward the boss spawn on the far side
+  lastDamageTime = clock.elapsedTime;
+  updateHealthHUD();
+  document.getElementById('wave').textContent = 'BOSS FIGHT';
+  spawnBossOfType(type);
+  showBanner(cfg.icon + ' ' + cfg.name, '#ff5252');
+}
+
 function damageEnemy(e, dmg, point, headshot) {
   if (!e.alive) return;
   if (headshot) dmg *= HEADSHOT_MULT;
@@ -1615,9 +1957,20 @@ function damageEnemy(e, dmg, point, headshot) {
 function killEnemy(e) {
   e.alive = false;
   aliveCount--;
+  if (e.telegraphRing) {
+    const idx = activeTelegraphs.indexOf(e.telegraphRing);
+    if (idx >= 0) activeTelegraphs.splice(idx, 1);
+    scene.remove(e.telegraphRing); e.telegraphRing = null;
+  }
   if (e.isBoss) {
-    score += 1000; coins += 500;
-    showBanner('☠ BOSS DEFEATED', '#7ef0a8');
+    score += 1000;
+    if (e.bossType) {
+      showBanner('☠ ' + BOSSES[e.bossType].name + ' DEFEATED', '#7ef0a8');
+      bossFightWon(e.bossType);
+    } else {
+      coins += 500;
+      showBanner('☠ BOSS DEFEATED', '#7ef0a8');
+    }
   } else {
     score += 100; coins += KILL_REWARD;
   }
@@ -1627,10 +1980,25 @@ function killEnemy(e) {
   e.dying = true; e.dieT = 0;
 }
 
+// Reward + persisted trophy unlock for winning a Boss Fight run.
+function bossFightWon(type) {
+  const cfg = BOSSES[type];
+  coins += cfg.coinReward;
+  updateCoinsHUD();
+  const unlocks = loadBossUnlocks();
+  const newlyUnlocked = !unlocks[type];
+  if (newlyUnlocked) { unlocks[type] = true; saveBossUnlocks(unlocks); }
+  WEAPONS.forEach(w => { if (w.trophyOf === type) w.owned = true; });
+  document.exitPointerLock();
+  document.getElementById('boss-complete-sub').textContent =
+    cfg.name + ' defeated! +' + cfg.coinReward + ' coins' + (newlyUnlocked ? ' — 🏆 ' + cfg.trophyName + ' unlocked!' : ' — 🏆 ' + cfg.trophyName + ' (already unlocked)');
+  setTimeout(() => document.getElementById('boss-complete-screen').classList.remove('hidden'), 1000);
+}
+
 // ---------- HUD helpers ----------
 function updateAmmoHUD() {
   const w = WEAPONS[curWeapon];
-  if (w.melee) {
+  if (w.melee || w.infiniteAmmo) {
     document.getElementById('ammo-num').textContent = '∞';
     document.getElementById('ammo-max').textContent = '∞';
   } else {
@@ -1721,13 +2089,32 @@ function update(dt) {
   if (aiming) speed *= 0.5;                                // Aiming down sights = slower
   const forward = new THREE_.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const right   = new THREE_.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
-  let move = new THREE_.Vector3();
-  if (keys[b.forward]) move.add(forward);
-  if (keys[b.back])    move.sub(forward);
-  if (keys[b.right])   move.add(right);
-  if (keys[b.left])    move.sub(right);
-  if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
-  collideMove(camera.position, move.x, move.z, camera.position.y - PLAYER_HEIGHT);
+
+  // start a slide: C, grounded, not already sliding — locks in the current facing as the slide direction
+  if (keys['KeyC'] && !sliding && player.onGround) {
+    sliding = true; slideT = 0;
+    slideDir.x = forward.x; slideDir.z = forward.z;
+  }
+
+  const curHeight = sliding ? SLIDE_HEIGHT : PLAYER_HEIGHT;
+  if (sliding) {
+    slideT += dt;
+    if (slideT >= SLIDE_DURATION || !player.onGround) {
+      sliding = false;
+    } else {
+      const slideSpeed = SLIDE_SPEED_START + (SLIDE_SPEED_END - SLIDE_SPEED_START) * (slideT / SLIDE_DURATION);
+      collideMove(camera.position, slideDir.x * slideSpeed * dt, slideDir.z * slideSpeed * dt, camera.position.y - curHeight);
+    }
+  }
+  if (!sliding) {
+    let move = new THREE_.Vector3();
+    if (keys[b.forward]) move.add(forward);
+    if (keys[b.back])    move.sub(forward);
+    if (keys[b.right])   move.add(right);
+    if (keys[b.left])    move.sub(right);
+    if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
+    collideMove(camera.position, move.x, move.z, camera.position.y - curHeight);
+  }
 
   // gravity (Glider ability = gentle slow-fall while active and airborne)
   let gravity = 22;
@@ -1738,7 +2125,7 @@ function update(dt) {
   player.vel.y -= gravity * dt;
   camera.position.y += player.vel.y * dt;
   const standTop = arenaHalf === CTF_ARENA ? platformTopAt(camera.position.x, camera.position.z) : 0;
-  const floorY = standTop + PLAYER_HEIGHT;
+  const floorY = standTop + (sliding ? SLIDE_HEIGHT : PLAYER_HEIGHT);
   if (camera.position.y <= floorY) {
     camera.position.y = floorY; player.vel.y = 0;
     player.onGround = true; gliderActive = false;
@@ -1838,6 +2225,9 @@ function update(dt) {
     // face player
     e.group.rotation.y = Math.atan2(toP.x, toP.z);
 
+    if (e.bossType) updateBossSpecial(e, dt, ppos, dist);
+
+    if (!e.bossType || e.specialPhase === 'idle') {
     if (e.isRanged) {
       // skeleton: hold at preferred range and shoot projectiles
       let step = 0;
@@ -1863,8 +2253,11 @@ function update(dt) {
         e.legL.rotation.x = Math.sin(e.walkPhase) * 0.6;
         e.legR.rotation.x = -Math.sin(e.walkPhase) * 0.6;
       } else {
+        // melee reach: an enemy can't hit you if you're up above it (e.g. jumped over its head)
+        const playerFeetY = camera.position.y - (sliding ? SLIDE_HEIGHT : PLAYER_HEIGHT);
+        const outOfReach = playerFeetY > e.headBottomY + 0.6;
         // attack (bosses hit much harder)
-        if (clock.elapsedTime - e.lastAttack > 0.8) {
+        if (!outOfReach && clock.elapsedTime - e.lastAttack > 0.8) {
           e.lastAttack = clock.elapsedTime;
           if (!ADMIN.godMode) {
             player.health -= e.isBoss ? (24 + wave * 2) : (8 + wave);
@@ -1875,6 +2268,7 @@ function update(dt) {
           }
         }
       }
+    }
     }
     // billboard health bar
     e.barFg.lookAt(ppos); e.barFg.parent && (e.barFg.quaternion.copy(camera.quaternion));
@@ -1994,6 +2388,9 @@ function renderShop(fromLobby = false) {
     if (w.owned) {
       const equipped = i === curWeapon;
       btn = '<button class="ibuy ' + (equipped ? 'equipped' : 'equip') + '" data-equip="' + i + '">' + (equipped ? 'Equipped' : 'Equip') + '</button>';
+    } else if (w.trophyOf) {
+      // trophy weapons can never be bought with coins — only earned by beating their boss
+      btn = '<button class="ibuy locked">🔒 Defeat ' + BOSSES[w.trophyOf].name + '</button>';
     } else if (coins >= w.price) {
       btn = '<button class="ibuy buy" data-buyw="' + i + '">🪙 ' + w.price + '</button>';
     } else {
@@ -2167,10 +2564,34 @@ function selectGamemode(mode) {
       lobbyState.mockPlayers.push(`Player ${i + 2}`);
     }
     updatePlayersList();
+  } else if (mode === 'boss') {
+    showBossSelect();
   } else {
     startGame();
   }
 }
+
+// ---------- Boss select modal ----------
+let pendingBossType = null;
+function renderBossSelect() {
+  const unlocks = loadBossUnlocks();
+  const wrap = document.getElementById('boss-select-options');
+  wrap.innerHTML = '';
+  Object.keys(BOSSES).forEach(key => {
+    const b = BOSSES[key];
+    const unlocked = !!unlocks[key];
+    const btn = document.createElement('button');
+    btn.className = 'gamemode-btn boss-card' + (unlocked ? ' unlocked' : '');
+    btn.innerHTML = '<span class="icon">' + b.icon + '</span><span class="label">' + b.name + '</span>' +
+      '<span class="desc">' + b.desc + '</span>' +
+      '<span class="lock-tag">' + (unlocked ? '🏆 ' + b.trophyName + ' unlocked' : '🔒 Reward: ' + b.trophyName) + '</span>';
+    btn.addEventListener('click', () => selectBoss(key));
+    wrap.appendChild(btn);
+  });
+}
+function showBossSelect() { renderBossSelect(); document.getElementById('boss-select-modal').classList.add('active'); }
+function closeBossSelect() { document.getElementById('boss-select-modal').classList.remove('active'); }
+function selectBoss(type) { pendingBossType = type; closeBossSelect(); startGame(); }
 
 function updatePlayersList() {
   const list = document.getElementById('players-list');
@@ -2251,7 +2672,9 @@ function startGame() {
   document.getElementById('boss-banner').classList.add('hidden');
   document.getElementById('leaderboard-screen').classList.add('hidden');
   document.getElementById('ctf-complete-screen').classList.add('hidden');
+  document.getElementById('boss-complete-screen').classList.add('hidden');
   document.getElementById('gamemode-modal').classList.remove('active');
+  document.getElementById('boss-select-modal').classList.remove('active');
   lastRunEntry = null;
   started = true; shopOpen = false;
   ctfActive = false; ctfRestarting = false; ctfInterstitial = false;
@@ -2261,14 +2684,17 @@ function startGame() {
   enemies.forEach(e => scene.remove(e.group));
   enemies.length = 0;
   clearProjectiles();
+  clearTelegraphs();
   explosions.forEach(ex => { scene.remove(ex.m); scene.remove(ex.light); });
   explosions.length = 0;
   aliveCount = 0; wave = 1; score = 0; coins = 0; toSpawn = 0; waveActive = false;
   player.health = 100; player.yaw = 0; player.pitch = 0; player.vel.set(0,0,0);
+  sliding = false;
   lastDamageTime = clock.elapsedTime;
   camera.position.set(0, PLAYER_HEIGHT, 0);
-  // reset weapon ownership: Knife (0) + Pistol (1) free, rest locked
-  WEAPONS.forEach((w, i) => { w.ammo = w.mag; w.owned = (i === 0 || i === 1); });
+  // reset weapon ownership: Knife (0) + Pistol (1) free, trophy weapons stay owned if unlocked, rest locked
+  const bossUnlocks = loadBossUnlocks();
+  WEAPONS.forEach((w, i) => { w.ammo = w.mag; w.owned = (i === 0 || i === 1) || (w.trophyOf && bossUnlocks[w.trophyOf]); });
   // reset abilities
   for (const k in ABILITIES) { ABILITIES[k].owned = false; ABILITIES[k].cdEnd = 0; }
   speedBoostEnd = 0; gliderActive = false; airJumps = 0; meleeSwing = 0;
@@ -2286,6 +2712,8 @@ function startGame() {
   }
   if (lobbyState.gamemode === 'ctf') {
     startCtfLevel(1);
+  } else if (lobbyState.gamemode === 'boss') {
+    startBossFight(pendingBossType);
   } else {
     setArenaMode('main');
     startWave();
@@ -2330,7 +2758,9 @@ document.getElementById('lobby-settings').addEventListener('click', () => openLo
 document.getElementById('gamemode-bots').addEventListener('click', () => selectGamemode('bots'));
 document.getElementById('gamemode-multiplayer').addEventListener('click', () => selectGamemode('multiplayer'));
 document.getElementById('gamemode-ctf').addEventListener('click', () => selectGamemode('ctf'));
+document.getElementById('gamemode-boss').addEventListener('click', () => selectGamemode('boss'));
 document.getElementById('gamemode-cancel').addEventListener('click', closeGamemodeSelection);
+document.getElementById('boss-select-cancel').addEventListener('click', closeBossSelect);
 
 // CTF level-complete screen wiring
 document.getElementById('ctf-next-level-btn').addEventListener('click', () => {
@@ -2344,6 +2774,17 @@ document.getElementById('ctf-menu-btn').addEventListener('click', () => {
   ctfInterstitial = false;
   ctfActive = false;
   setArenaMode('main');
+  openLobby();
+});
+
+// Boss Fight complete screen wiring
+document.getElementById('boss-again-btn').addEventListener('click', () => {
+  document.getElementById('boss-complete-screen').classList.add('hidden');
+  startGame();
+  lockPointer();
+});
+document.getElementById('boss-menu-btn').addEventListener('click', () => {
+  document.getElementById('boss-complete-screen').classList.add('hidden');
   openLobby();
 });
 
