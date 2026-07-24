@@ -136,6 +136,8 @@
 
   /* Abilities HUD (bottom center) */
   #abilities-hud { left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; gap: 12px; }
+  /* Deployables HUD (stacked just above the abilities row) */
+  #deployables-hud { left: 50%; bottom: 118px; transform: translateX(-50%); display: flex; gap: 12px; }
 
   /* Boss health bar */
   #boss-hud { top: 104px; left: 50%; transform: translateX(-50%); width: min(540px, 80vw); text-align: center; }
@@ -165,7 +167,7 @@
   /* Shop */
   #shop-screen h1 { margin-bottom: 2px; }
   .shop-coins { font-size: 26px; font-weight: 900; color:var(--accent-text); margin-bottom: 14px; }
-  .shop-cols { display: flex; gap: 26px; width: min(900px, 92vw); align-items: flex-start; }
+  .shop-cols { display: flex; gap: 22px; width: min(1120px, 94vw); align-items: flex-start; }
   .shop-col { flex: 1; }
   .shop-col-title { text-align: left; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; opacity: .6; margin-bottom: 10px; }
   .cd-note { letter-spacing: 1px; color:var(--accent-text); opacity:.9; }
@@ -283,6 +285,7 @@
 
 <div id="weapons-list" class="hud"></div>
 
+<div id="deployables-hud" class="hud"></div>
 <div id="abilities-hud" class="hud"></div>
 
 <!-- Boss health bar (top, only while a boss is alive) -->
@@ -319,6 +322,7 @@
     <span><b>E</b></span><span>Reload</span>
     <span><b>Space</b></span><span>Jump</span>
     <span><b>C</b></span><span>Slide</span>
+    <span><b>G / V / T / B</b></span><span>Grenade / Mine / Turret / Barracks</span>
     <span><b>Shift</b></span><span>Lock / unlock cursor</span>
     <span><b>Esc</b></span><span>Release mouse</span>
   </div>
@@ -480,7 +484,7 @@
     </div>
     <div class="setting-sub">Controls — click a key, then press the new key to rebind</div>
     <div id="bindings"></div>
-    <div class="setting-note">Aim with the <b>Mouse</b>, shoot with <b>Left Click</b>, switch weapons with <b>1–9</b> (fixed). Press <b>C</b> while grounded to slide forward (press <b>Jump</b> mid-slide to cancel into a jump). Trophy weapons (earned from Boss Fights): <b>Shift+1</b> Warlord's Cleaver, <b>Shift+2</b> Skitterfang's Bone Repeater, <b>Shift+3</b> Reaper's Scythe Rifle. Tap <b>Shift</b> to lock/unlock the cursor. Abilities: <b>Q</b> Speed, <b>F</b> Glider, and press <b>Jump</b> again mid-air for Double/Triple Jump.</div>
+    <div class="setting-note">Aim with the <b>Mouse</b>, shoot with <b>Left Click</b>, switch weapons with <b>1–9</b> (fixed). Press <b>C</b> while grounded to slide forward (press <b>Jump</b> mid-slide to cancel into a jump). Trophy weapons (earned from Boss Fights): <b>Shift+1</b> Warlord's Cleaver, <b>Shift+2</b> Skitterfang's Bone Repeater, <b>Shift+3</b> Reaper's Scythe Rifle. Tap <b>Shift</b> to lock/unlock the cursor. Abilities: <b>Q</b> Speed, <b>F</b> Glider, and press <b>Jump</b> again mid-air for Double/Triple Jump. Tactical deployables (buy in shop): <b>G</b> Grenade, <b>V</b> Landmine, <b>T</b> Auto-Turret, <b>B</b> Barracks.</div>
   </div>
   <div class="settings-actions">
     <button class="btn secondary" id="settings-reset">Reset to Defaults</button>
@@ -501,6 +505,10 @@
       <div class="shop-col-title">Abilities <span class="cd-note">(5s cooldown each)</span></div>
       <div id="shop-abilities" class="shop-grid"></div>
     </div>
+    <div class="shop-col">
+      <div class="shop-col-title">Tactical <span class="cd-note">(deploy w/ hotkey)</span></div>
+      <div id="shop-deployables" class="shop-grid"></div>
+    </div>
   </div>
   <button class="btn" id="next-wave-btn">Start Next Wave →</button>
 </div>
@@ -514,7 +522,7 @@
     <button class="admin-toggle" data-toggle="infAmmo"><span class="at-name">♾ Unlimited Ammo</span><span class="at-state">OFF</span></button>
     <button class="admin-toggle" data-toggle="noCd"><span class="at-name">⏱ Zero Cooldowns</span><span class="at-state">OFF</span></button>
     <button class="btn secondary admin-action" id="admin-weapons">🔫 Unlock All Weapons</button>
-    <button class="btn secondary admin-action" id="admin-abilities">✨ Unlock All Abilities</button>
+    <button class="btn secondary admin-action" id="admin-abilities">✨ Unlock Abilities & Tactical</button>
     <button class="btn secondary admin-action" id="admin-coins">🪙 +10,000 Coins</button>
   </div>
   <button class="btn" id="admin-close">Close</button>
@@ -930,6 +938,8 @@ document.addEventListener('keydown', e => {
   // abilities
   if (e.code === ABILITIES.speed.key) activateAbility('speed');
   if (e.code === ABILITIES.glider.key) activateAbility('glider');
+  // deployables (throwables / explosives / structures)
+  if (!e.repeat) for (const dk in DEPLOYABLES) if (e.code === DEPLOYABLES[dk].key) deployItem(dk);
 });
 
 // Triple Jump grants 2 mid-air jumps, Double Jump grants 1 (Triple wins if owned).
@@ -1079,6 +1089,29 @@ const ABILITIES = {
 };
 let speedBoostEnd = 0, gliderActive = false, gliderEnd = 0, airJumps = 0;
 
+// ---------- Deployables (throwables / explosives / structures — bought in shop, per-item cooldown) ----------
+// Like abilities, each is unlocked once with coins, then used with its own cooldown. Placed
+// structures (turret/barracks) also cap how many can be active at once. No enemy-AI changes:
+// turrets shoot enemies, barracks spawn friendly soldiers that hunt enemies, all alongside the
+// existing bots that keep targeting the player.
+const DEPLOYABLES = {
+  grenade:  { name: 'Frag Grenade', desc: 'Arced throw, explodes on impact',       icon: '💣', keyLabel: 'G', key: 'KeyG', price: 450,  owned: false, cd: 2.0,  cdEnd: 0,
+              throwSpeed: 28, throwUp: 6.5, maxAirtime: 3.0, radius: 7,  dmg: 130 },
+  mine:     { name: 'Landmine',     desc: 'Drops at your feet, blows on contact',  icon: '🧨', keyLabel: 'V', key: 'KeyV', price: 600,  owned: false, cd: 3.0,  cdEnd: 0,
+              maxActive: 6, arm: 0.7, trigger: 3.2, radius: 8, dmg: 170, life: 60 },
+  turret:   { name: 'Auto-Turret',  desc: 'Sentry gun; auto-fires at enemies',     icon: '🛡', keyLabel: 'T', key: 'KeyT', price: 1400, owned: false, cd: 8.0,  cdEnd: 0,
+              maxActive: 3, range: 30, fireCd: 0.5, dmg: 20, hp: 140, life: 24 },
+  barracks: { name: 'Barracks',     desc: 'Deploys friendly soldiers that fight',  icon: '🏠', keyLabel: 'B', key: 'KeyB', price: 2000, owned: false, cd: 14.0, cdEnd: 0,
+              maxActive: 2, spawnCd: 3, maxAllies: 3, life: 34, allyHp: 70, allyDmg: 24, allyRange: 2.4, allySpeed: 7.5, allyLife: 30 },
+};
+// live instances
+const grenadesLive = [];   // {mesh, vel, airT}
+const mines = [];          // {group, light, armT, life, armed}
+const turrets = [];        // {group, head, hp, maxHp, life, fireT}
+const barracksList = [];   // {group, life, spawnT}
+const allies = [];         // {group, legL, legR, hp, life, walkPhase, atkT, target}
+const tracers = [];        // {line, t}  short-lived shot tracers (turret/ally fire)
+
 // ---------- Admin / cheats (per-game only; toggle panel with the } key) ----------
 const ADMIN = { godMode: false, infAmmo: false, noCd: false };
 let adminOpen = false;
@@ -1144,6 +1177,427 @@ function updateProjectiles(dt) {
     // despawn out of bounds
     if (Math.abs(p.m.position.x) > arenaHalf || Math.abs(p.m.position.z) > arenaHalf || p.m.position.y < 0) dead = true;
     if (dead) { scene.remove(p.m); projectiles.splice(i, 1); }
+  }
+}
+
+// ============================================================
+//  Deployables: grenades, landmines, auto-turrets, barracks
+// ============================================================
+
+// ground height at an x/z (accounts for CTF stand-on platforms)
+function groundYAt(x, z) {
+  return arenaHalf === CTF_ARENA ? platformTopAt(x, z) : 0;
+}
+
+// AoE damage falloff — used by grenade & mine blasts
+function damageAoE(pos, radius, dmg) {
+  let any = false;
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    const d = e.group.position.distanceTo(pos);
+    if (d <= radius) {
+      damageEnemy(e, dmg * (0.45 + 0.55 * (1 - d / radius)), e.group.position, false);
+      any = true;
+    }
+  }
+  return any;
+}
+
+// A quick fading line from a->b, used for turret / ally shots
+function spawnTracer(a, b, color) {
+  const geo = new THREE_.BufferGeometry().setFromPoints([a.clone(), b.clone()]);
+  const line = new THREE_.Line(geo, new THREE_.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+  scene.add(line);
+  tracers.push({ line, t: 0 });
+}
+
+// ---- models ----
+function buildGrenadeModel() {
+  const g = new THREE_.Group();
+  const shell = new THREE_.Mesh(new THREE_.SphereGeometry(0.16, 8, 6),
+    new THREE_.MeshStandardMaterial({ color: 0x3a5a2a, flatShading: true, roughness: .7 }));
+  const cap = new THREE_.Mesh(new THREE_.CylinderGeometry(0.07, 0.07, 0.08, 6),
+    new THREE_.MeshStandardMaterial({ color: 0x555555, flatShading: true, metalness: .5 }));
+  cap.position.y = 0.17;
+  g.add(shell, cap);
+  return g;
+}
+
+function buildMineModel() {
+  const g = new THREE_.Group();
+  const disc = new THREE_.Mesh(new THREE_.CylinderGeometry(0.55, 0.62, 0.18, 10),
+    new THREE_.MeshStandardMaterial({ color: 0x2c2f24, flatShading: true, roughness: .85, metalness: .2 }));
+  disc.position.y = 0.09;
+  const dome = new THREE_.Mesh(new THREE_.SphereGeometry(0.22, 8, 6, 0, Math.PI*2, 0, Math.PI/2),
+    new THREE_.MeshStandardMaterial({ color: 0x44341a, flatShading: true }));
+  dome.position.y = 0.18;
+  const light = new THREE_.Mesh(new THREE_.SphereGeometry(0.07, 6, 6),
+    new THREE_.MeshBasicMaterial({ color: 0xff2b2b }));
+  light.position.y = 0.36;
+  for (let i = 0; i < 3; i++) {
+    const a = i * (Math.PI * 2 / 3);
+    const prong = new THREE_.Mesh(new THREE_.BoxGeometry(0.05, 0.16, 0.05),
+      new THREE_.MeshStandardMaterial({ color: 0x777777, flatShading: true, metalness: .5 }));
+    prong.position.set(Math.sin(a) * 0.4, 0.24, Math.cos(a) * 0.4);
+    prong.rotation.x = Math.cos(a) * 0.4; prong.rotation.z = -Math.sin(a) * 0.4;
+    g.add(prong);
+  }
+  g.add(disc, dome, light);
+  g.userData.light = light;
+  return g;
+}
+
+function buildTurretModel() {
+  const g = new THREE_.Group();
+  const steel = new THREE_.MeshStandardMaterial({ color: 0x51617a, flatShading: true, roughness: .5, metalness: .55 });
+  const dark  = new THREE_.MeshStandardMaterial({ color: 0x1c2130, flatShading: true, roughness: .6 });
+  const base = new THREE_.Mesh(new THREE_.CylinderGeometry(0.55, 0.7, 0.4, 10), steel);
+  base.position.y = 0.2; base.castShadow = true;
+  const post = new THREE_.Mesh(new THREE_.CylinderGeometry(0.18, 0.22, 0.5, 8), dark);
+  post.position.y = 0.6;
+  // rotating head
+  const head = new THREE_.Group(); head.position.y = 0.95;
+  const housing = new THREE_.Mesh(new THREE_.BoxGeometry(0.7, 0.5, 0.7), steel);
+  housing.castShadow = true;
+  const eye = new THREE_.Mesh(new THREE_.BoxGeometry(0.28, 0.14, 0.06),
+    new THREE_.MeshBasicMaterial({ color: 0x37d67a }));
+  eye.position.set(0, 0.05, 0.36);
+  const barrelL = new THREE_.Mesh(new THREE_.CylinderGeometry(0.06, 0.06, 0.7, 6), dark);
+  barrelL.rotation.x = Math.PI / 2; barrelL.position.set(-0.14, -0.05, 0.5);
+  const barrelR = barrelL.clone(); barrelR.position.x = 0.14;
+  head.add(housing, eye, barrelL, barrelR);
+  head.userData.eye = eye;
+  g.add(base, post, head);
+  g.userData.head = head;
+  return g;
+}
+
+function buildBarracksModel() {
+  const g = new THREE_.Group();
+  const wall = new THREE_.MeshStandardMaterial({ color: 0x4a5a3a, flatShading: true, roughness: .9 });
+  const roof = new THREE_.MeshStandardMaterial({ color: 0x2f3a26, flatShading: true, roughness: .9 });
+  const dark = new THREE_.MeshStandardMaterial({ color: 0x20261a, flatShading: true });
+  const hut = new THREE_.Mesh(new THREE_.BoxGeometry(3.2, 2.2, 2.6), wall);
+  hut.position.y = 1.1; hut.castShadow = true; hut.receiveShadow = true;
+  const top = new THREE_.Mesh(new THREE_.BoxGeometry(3.5, 0.5, 2.9), roof);
+  top.position.y = 2.35;
+  const door = new THREE_.Mesh(new THREE_.BoxGeometry(0.9, 1.4, 0.1), dark);
+  door.position.set(0, 0.7, 1.31);
+  // sandbags along the front
+  for (let i = -1; i <= 1; i++) {
+    const bag = new THREE_.Mesh(new THREE_.BoxGeometry(0.8, 0.4, 0.5),
+      new THREE_.MeshStandardMaterial({ color: 0x6b6141, flatShading: true, roughness: 1 }));
+    bag.position.set(i * 0.95, 0.2, 1.7);
+    g.add(bag);
+  }
+  // flag pole + banner
+  const pole = new THREE_.Mesh(new THREE_.CylinderGeometry(0.05, 0.05, 1.6, 6), dark);
+  pole.position.set(1.5, 3.1, 0);
+  const banner = new THREE_.Mesh(new THREE_.PlaneGeometry(0.9, 0.55),
+    new THREE_.MeshStandardMaterial({ color: 0x4aa0ff, flatShading: true, side: THREE_.DoubleSide }));
+  banner.position.set(1.95, 3.5, 0);
+  g.add(hut, top, door, pole, banner);
+  return g;
+}
+
+// Friendly soldier spawned by a barracks — blocky blue avatar in the shared art style
+function buildAllyModel() {
+  const suit = new THREE_.MeshStandardMaterial({ color: 0x3a6bd6, flatShading: true, roughness: .7 });
+  const skin = new THREE_.MeshStandardMaterial({ color: 0xd8a878, flatShading: true });
+  const g = new THREE_.Group();
+  const body = new THREE_.Mesh(new THREE_.BoxGeometry(0.55, 0.7, 0.36), suit);
+  body.position.y = 1.0; body.castShadow = true;
+  const head = new THREE_.Mesh(new THREE_.BoxGeometry(0.38, 0.38, 0.38), skin);
+  head.position.y = 1.55;
+  const helm = new THREE_.Mesh(new THREE_.BoxGeometry(0.44, 0.18, 0.44), suit);
+  helm.position.y = 1.74;
+  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 0.6, 0.16), suit);
+  armL.position.set(-0.38, 1.0, 0);
+  const armR = armL.clone(); armR.position.x = 0.38;
+  const gun = new THREE_.Mesh(new THREE_.BoxGeometry(0.13, 0.13, 0.55),
+    new THREE_.MeshStandardMaterial({ color: 0x8af0ff, flatShading: true }));
+  gun.position.set(0, -0.18, -0.28); gun.rotation.x = -0.2; armR.add(gun);
+  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.2, 0.7, 0.2), suit);
+  legL.position.set(-0.14, 0.35, 0);
+  const legR = legL.clone(); legR.position.x = 0.14;
+  g.add(body, head, helm, armL, armR, legL, legR);
+  g.userData.legL = legL; g.userData.legR = legR; g.userData.muzzle = gun;
+  return g;
+}
+
+// ---- deploy actions ----
+// horizontal forward vector from current yaw
+function forwardHoriz() {
+  return new THREE_.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+}
+// a placement point a couple units in front of the player, clamped to the arena
+function placePointAhead(dist) {
+  const f = forwardHoriz();
+  const bound = arenaHalf - 2;
+  const x = Math.max(-bound, Math.min(bound, camera.position.x + f.x * dist));
+  const z = Math.max(-bound, Math.min(bound, camera.position.z + f.z * dist));
+  return { x, z };
+}
+
+function throwGrenade() {
+  const d = DEPLOYABLES.grenade;
+  const mesh = buildGrenadeModel();
+  const origin = camera.getWorldPosition(new THREE_.Vector3());
+  mesh.position.copy(origin);
+  const dir = new THREE_.Vector3(); camera.getWorldDirection(dir);
+  const vel = dir.multiplyScalar(d.throwSpeed);
+  vel.y += d.throwUp;
+  scene.add(mesh);
+  grenadesLive.push({ mesh, vel, airT: 0 });
+}
+
+function detonateGrenade(gr) {
+  const d = DEPLOYABLES.grenade;
+  spawnExplosion(gr.mesh.position, d.radius);
+  damageAoE(gr.mesh.position, d.radius, d.dmg);
+  scene.remove(gr.mesh);
+}
+
+function placeMine() {
+  const d = DEPLOYABLES.mine;
+  if (mines.length >= d.maxActive) { const old = mines.shift(); scene.remove(old.group); }
+  const p = placePointAhead(1.6);
+  const g = buildMineModel();
+  g.position.set(p.x, groundYAt(p.x, p.z) + 0.02, p.z);
+  scene.add(g);
+  mines.push({ group: g, light: g.userData.light, armT: d.arm, life: d.life, armed: false });
+}
+
+function placeTurret() {
+  const d = DEPLOYABLES.turret;
+  if (turrets.length >= d.maxActive) { const old = turrets.shift(); scene.remove(old.group); }
+  const p = placePointAhead(2.4);
+  const g = buildTurretModel();
+  g.position.set(p.x, groundYAt(p.x, p.z), p.z);
+  scene.add(g);
+  turrets.push({ group: g, head: g.userData.head, hp: d.hp, maxHp: d.hp, life: d.life, fireT: 0 });
+}
+
+function placeBarracks() {
+  const d = DEPLOYABLES.barracks;
+  if (barracksList.length >= d.maxActive) { const old = barracksList.shift(); scene.remove(old.group); }
+  const p = placePointAhead(4);
+  const g = buildBarracksModel();
+  g.position.set(p.x, groundYAt(p.x, p.z), p.z);
+  g.rotation.y = player.yaw + Math.PI;   // face the door toward the player
+  scene.add(g);
+  barracksList.push({ group: g, life: d.life, spawnT: 0.5 });
+}
+
+function spawnAlly(x, z) {
+  const d = DEPLOYABLES.barracks;
+  const g = buildAllyModel();
+  g.position.set(x, groundYAt(x, z), z);
+  scene.add(g);
+  allies.push({ group: g, legL: g.userData.legL, legR: g.userData.legR, muzzle: g.userData.muzzle,
+    hp: d.allyHp, life: d.allyLife, walkPhase: Math.random() * 6.28, atkT: 0 });
+}
+
+// Deploy dispatcher — checks ownership + cooldown, runs the matching action, sets cooldown
+function deployItem(key) {
+  const d = DEPLOYABLES[key];
+  if (!d || !d.owned || !running) return;
+  const t = clock.elapsedTime;
+  if (!ADMIN.noCd && t < d.cdEnd) return;
+  if (key === 'grenade') throwGrenade();
+  else if (key === 'mine') placeMine();
+  else if (key === 'turret') placeTurret();
+  else if (key === 'barracks') placeBarracks();
+  d.cdEnd = ADMIN.noCd ? 0 : t + d.cd;
+}
+
+function nearestEnemy(pos, maxDist) {
+  let best = null, bestD = maxDist;
+  for (const e of enemies) {
+    if (!e.alive || e.dying) continue;
+    const dx = e.group.position.x - pos.x, dz = e.group.position.z - pos.z;
+    const dd = Math.hypot(dx, dz);
+    if (dd < bestD) { bestD = dd; best = e; }
+  }
+  return best;
+}
+
+// Remove every live deployable/ally/tracer (on game reset or mode switch)
+function clearDeployables() {
+  grenadesLive.forEach(o => scene.remove(o.mesh)); grenadesLive.length = 0;
+  mines.forEach(o => scene.remove(o.group)); mines.length = 0;
+  turrets.forEach(o => scene.remove(o.group)); turrets.length = 0;
+  barracksList.forEach(o => scene.remove(o.group)); barracksList.length = 0;
+  allies.forEach(o => scene.remove(o.group)); allies.length = 0;
+  tracers.forEach(o => scene.remove(o.line)); tracers.length = 0;
+}
+
+// ---- per-frame update ----
+function updateDeployables(dt) {
+  const t = clock.elapsedTime;
+
+  // grenades: ballistic arc, explode on first contact with an enemy, wall/obstacle, or the ground
+  for (let i = grenadesLive.length - 1; i >= 0; i--) {
+    const gr = grenadesLive[i];
+    gr.vel.y -= 22 * dt;
+    gr.mesh.position.addScaledVector(gr.vel, dt);
+    gr.mesh.rotation.x += dt * 10; gr.mesh.rotation.z += dt * 8;
+    gr.airT += dt;
+
+    let impact = gr.airT >= DEPLOYABLES.grenade.maxAirtime;   // failsafe if it somehow never touches anything
+    if (!impact && nearestEnemy(gr.mesh.position, 0.9)) impact = true;
+    const gy = groundYAt(gr.mesh.position.x, gr.mesh.position.z) + 0.16;
+    if (!impact && gr.mesh.position.y <= gy) { gr.mesh.position.y = gy; impact = true; }
+    if (!impact) {
+      for (const o of activeObstacles) {
+        if (gr.mesh.position.x > o.min.x - 0.16 && gr.mesh.position.x < o.max.x + 0.16 &&
+            gr.mesh.position.z > o.min.z - 0.16 && gr.mesh.position.z < o.max.z + 0.16) { impact = true; break; }
+      }
+    }
+    const b = arenaHalf - 1;
+    if (!impact && (Math.abs(gr.mesh.position.x) > b || Math.abs(gr.mesh.position.z) > b)) impact = true;
+
+    if (impact) { detonateGrenade(gr); grenadesLive.splice(i, 1); }
+  }
+
+  // mines: arm, blink, detonate when an enemy steps into range (or expire)
+  for (let i = mines.length - 1; i >= 0; i--) {
+    const m = mines[i];
+    m.life -= dt;
+    if (m.armT > 0) { m.armT -= dt; if (m.armT <= 0) m.armed = true; }
+    m.light.material.color.setHex(m.armed ? (Math.sin(t * 8) > 0 ? 0xff2b2b : 0x550000) : 0xffb000);
+    let boom = m.life <= 0;
+    if (m.armed && !boom) {
+      const e = nearestEnemy(m.group.position, DEPLOYABLES.mine.trigger);
+      if (e) boom = true;
+    }
+    if (boom) {
+      spawnExplosion(m.group.position, DEPLOYABLES.mine.radius);
+      damageAoE(m.group.position, DEPLOYABLES.mine.radius, DEPLOYABLES.mine.dmg);
+      scene.remove(m.group); mines.splice(i, 1);
+    }
+  }
+
+  // turrets: aim head at nearest enemy in range, fire on cooldown, expire on lifetime
+  for (let i = turrets.length - 1; i >= 0; i--) {
+    const tu = turrets[i];
+    tu.life -= dt;
+    const cfg = DEPLOYABLES.turret;
+    const muzzlePos = tu.group.position.clone(); muzzlePos.y += 0.95;
+    const target = nearestEnemy(tu.group.position, cfg.range);
+    if (target) {
+      const aim = Math.atan2(target.group.position.x - tu.group.position.x, target.group.position.z - tu.group.position.z);
+      tu.head.rotation.y = aim;
+      tu.fireT -= dt;
+      if (tu.fireT <= 0) {
+        tu.fireT = cfg.fireCd;
+        const tp = target.group.position.clone(); tp.y += 1.4;
+        spawnTracer(muzzlePos, tp, 0x9effc0);
+        damageEnemy(target, cfg.dmg, target.group.position, false);
+      }
+    } else {
+      tu.head.rotation.y += dt * 1.2;   // idle sweep
+    }
+    if (tu.life <= 0 || tu.hp <= 0) { scene.remove(tu.group); turrets.splice(i, 1); }
+  }
+
+  // barracks: drip out friendly soldiers up to the cap, expire on lifetime
+  for (let i = barracksList.length - 1; i >= 0; i--) {
+    const br = barracksList[i];
+    br.life -= dt; br.spawnT -= dt;
+    if (br.spawnT <= 0) {
+      br.spawnT = DEPLOYABLES.barracks.spawnCd;
+      if (allies.length < DEPLOYABLES.barracks.maxAllies * barracksList.length) {
+        const f = new THREE_.Vector3(Math.sin(br.group.rotation.y + Math.PI), 0, Math.cos(br.group.rotation.y + Math.PI));
+        spawnAlly(br.group.position.x + f.x * 2.2 + (Math.random() - .5), br.group.position.z + f.z * 2.2 + (Math.random() - .5));
+      }
+    }
+    if (br.life <= 0) { scene.remove(br.group); barracksList.splice(i, 1); }
+  }
+
+  updateAllies(dt);
+
+  // tracers fade out fast
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    const tr = tracers[i]; tr.t += dt;
+    tr.line.material.opacity = Math.max(0, 0.9 * (1 - tr.t / 0.09));
+    if (tr.t >= 0.09) { scene.remove(tr.line); tracers.splice(i, 1); }
+  }
+}
+
+// Friendly soldiers: rush the nearest enemy, shoot it when in range, trade blows if it's adjacent
+function updateAllies(dt) {
+  const cfg = DEPLOYABLES.barracks;
+  for (let i = allies.length - 1; i >= 0; i--) {
+    const a = allies[i];
+    a.life -= dt;
+    const target = nearestEnemy(a.group.position, 90);
+    let moving = false;
+    if (target) {
+      const dx = target.group.position.x - a.group.position.x;
+      const dz = target.group.position.z - a.group.position.z;
+      const dist = Math.hypot(dx, dz);
+      a.group.rotation.y = Math.atan2(dx, dz);
+      if (dist > cfg.allyRange) {
+        const step = cfg.allySpeed * dt / dist;
+        collideMove(a.group.position, dx * step, dz * step);
+        moving = true;
+      }
+      // fire on the target when within a comfortable range
+      a.atkT -= dt;
+      if (dist < 22 && a.atkT <= 0) {
+        a.atkT = 0.6;
+        const from = a.group.position.clone(); from.y += 1.4;
+        const to = target.group.position.clone(); to.y += 1.4;
+        spawnTracer(from, to, 0x8af0ff);
+        damageEnemy(target, cfg.allyDmg, target.group.position, false);
+      }
+      // adjacent enemy chips the ally's health (the "fight")
+      if (dist < cfg.allyRange + 0.6) a.hp -= 12 * dt;
+    }
+    // walk anim
+    a.walkPhase += dt * (moving ? 10 : 2);
+    const sw = moving ? Math.sin(a.walkPhase) * 0.6 : 0;
+    a.legL.rotation.x = sw; a.legR.rotation.x = -sw;
+    if (a.hp <= 0 || a.life <= 0) { scene.remove(a.group); allies.splice(i, 1); }
+  }
+}
+
+// ---- deployables HUD (chips like abilities, showing cooldown) ----
+const deployChips = {};
+function renderDeployablesHUD() {
+  const hud = document.getElementById('deployables-hud');
+  hud.innerHTML = '';
+  for (const key in DEPLOYABLES) deployChips[key] = null;
+  for (const key in DEPLOYABLES) {
+    const d = DEPLOYABLES[key];
+    if (!d.owned) continue;
+    const chip = document.createElement('div');
+    chip.className = 'abil-chip';
+    chip.innerHTML =
+      '<div class="ic">' + d.icon + '</div>' +
+      '<div class="nm">' + d.name + '</div>' +
+      '<div class="ky">' + d.keyLabel + '</div>' +
+      '<div class="cd-fill"></div><div class="cd-num"></div>';
+    hud.appendChild(chip);
+    deployChips[key] = { chip, fill: chip.querySelector('.cd-fill'), num: chip.querySelector('.cd-num') };
+  }
+}
+function updateDeployablesHUD() {
+  const t = clock.elapsedTime;
+  for (const key in deployChips) {
+    const ref = deployChips[key]; if (!ref) continue;
+    const d = DEPLOYABLES[key];
+    const remain = ADMIN.noCd ? 0 : d.cdEnd - t;
+    if (remain > 0) {
+      ref.chip.classList.add('cooling');
+      ref.fill.style.height = Math.min(100, (remain / d.cd) * 100) + '%';
+      ref.num.textContent = Math.ceil(remain);
+    } else {
+      ref.chip.classList.remove('cooling');
+      ref.fill.style.height = '0%';
+      ref.num.textContent = '';
+    }
   }
 }
 
@@ -2148,6 +2602,7 @@ function startCtfLevel(n) {
   enemies.forEach(e => scene.remove(e.group));
   enemies.length = 0;
   clearProjectiles();
+  clearDeployables();
   aliveCount = 0; toSpawn = 0; waveActive = false;
 
   setArenaMode('ctf');
@@ -2224,6 +2679,7 @@ function startBossFight(type) {
   enemies.length = 0;
   clearProjectiles();
   clearTelegraphs();
+  clearDeployables();
   aliveCount = 0; toSpawn = 0; waveActive = false;
   setArenaMode('main');
   camera.position.set(0, PLAYER_HEIGHT, ARENA - 10);
@@ -2511,8 +2967,12 @@ function update(dt) {
   // enemy projectiles (skeleton shots)
   updateProjectiles(dt);
 
+  // deployables: grenades, mines, turrets, barracks + friendly allies
+  updateDeployables(dt);
+
   // ability cooldown HUD
   updateAbilityHUD();
+  updateDeployablesHUD();
   // boss health bar
   updateBossHUD();
 
@@ -2756,10 +3216,29 @@ function renderShop(fromLobby = false) {
     row.innerHTML = '<div class="info"><div class="iname">' + a.icon + ' ' + a.name + ' <span style="opacity:.6;font-weight:400">[' + a.keyLabel + ']</span></div><div class="idesc">' + a.desc + '</div></div>' + btn;
     ag.appendChild(row);
   }
+  // Deployables (tactical)
+  const dg = document.getElementById('shop-deployables'); dg.innerHTML = '';
+  for (const key in DEPLOYABLES) {
+    const d = DEPLOYABLES[key];
+    const row = document.createElement('div'); row.className = 'shop-item';
+    let btn;
+    if (d.owned) btn = '<button class="ibuy owned">Owned</button>';
+    else if (coins >= d.price) btn = '<button class="ibuy buy" data-buyd="' + key + '">🪙 ' + d.price + '</button>';
+    else btn = '<button class="ibuy locked">🪙 ' + d.price + '</button>';
+    row.innerHTML = '<div class="info"><div class="iname">' + d.icon + ' ' + d.name + ' <span style="opacity:.6;font-weight:400">[' + d.keyLabel + ']</span></div><div class="idesc">' + d.desc + '</div></div>' + btn;
+    dg.appendChild(row);
+  }
   // wire buttons
   wg.querySelectorAll('[data-buyw]').forEach(b => b.onclick = () => buyWeapon(+b.dataset.buyw));
   wg.querySelectorAll('[data-equip]').forEach(b => b.onclick = () => { switchWeapon(+b.dataset.equip); renderWeaponList(); renderShop(); });
   ag.querySelectorAll('[data-buya]').forEach(b => b.onclick = () => buyAbility(b.dataset.buya));
+  dg.querySelectorAll('[data-buyd]').forEach(b => b.onclick = () => buyDeployable(b.dataset.buyd));
+}
+function buyDeployable(key) {
+  const d = DEPLOYABLES[key];
+  if (d.owned || coins < d.price) return;
+  coins -= d.price; d.owned = true; d.cdEnd = 0;
+  updateCoinsHUD(); renderDeployablesHUD(); renderShop();
 }
 function buyWeapon(i) {
   const w = WEAPONS[i];
@@ -3060,6 +3539,7 @@ function startGame() {
   enemies.length = 0;
   clearProjectiles();
   clearTelegraphs();
+  clearDeployables();
   explosions.forEach(ex => { scene.remove(ex.m); scene.remove(ex.light); });
   explosions.length = 0;
   aliveCount = 0; wave = 1; score = 0; coins = 0; toSpawn = 0; waveActive = false;
@@ -3072,11 +3552,14 @@ function startGame() {
   WEAPONS.forEach((w, i) => { w.ammo = w.mag; w.owned = (i === 0 || i === 1) || (w.trophyOf && bossUnlocks[w.trophyOf]); });
   // reset abilities
   for (const k in ABILITIES) { ABILITIES[k].owned = false; ABILITIES[k].cdEnd = 0; }
+  // reset deployables (bought per-run with coins, like abilities)
+  for (const k in DEPLOYABLES) { DEPLOYABLES[k].owned = false; DEPLOYABLES[k].cdEnd = 0; }
   speedBoostEnd = 0; gliderActive = false; airJumps = 0; meleeSwing = 0; meleeSwingT = -1;
   curWeapon = 1; reloading = false; aiming = false; camera.fov = BASE_FOV; camera.updateProjectionMatrix();   // start on Pistol
   buildViewModel();
   renderWeaponList();
   renderAbilityHUD();
+  renderDeployablesHUD();
   document.getElementById('score').textContent = '0';
   updateHealthHUD(); updateAmmoHUD(); updateCoinsHUD();
   gameOver = false;
@@ -3227,7 +3710,9 @@ document.getElementById('admin-weapons').addEventListener('click', () => {
 });
 document.getElementById('admin-abilities').addEventListener('click', () => {
   for (const k in ABILITIES) ABILITIES[k].owned = true;
+  for (const k in DEPLOYABLES) DEPLOYABLES[k].owned = true;
   renderAbilityHUD();
+  renderDeployablesHUD();
 });
 document.getElementById('admin-coins').addEventListener('click', () => {
   coins += 10000; updateCoinsHUD();
