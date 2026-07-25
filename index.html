@@ -162,6 +162,7 @@
   .abil-chip .ky { font-size: 11px; font-weight: 800; color:#ffd479; margin-top: 2px; }
   .abil-chip.cooling { opacity: .8; }
   .abil-chip .cd-fill { position: absolute; left: 0; bottom: 0; width: 100%; background: rgba(255,82,82,.35); pointer-events: none; }
+  .abil-chip.shielding .cd-fill { background: rgba(80,180,255,.45); }
   .abil-chip .cd-num { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 900; color:#fff; text-shadow:0 2px 4px #000; }
 
   /* Shop */
@@ -484,7 +485,7 @@
     </div>
     <div class="setting-sub">Controls — click a key, then press the new key to rebind</div>
     <div id="bindings"></div>
-    <div class="setting-note">Aim with the <b>Mouse</b>, shoot with <b>Left Click</b>, switch weapons with <b>1–9</b> (fixed). Press <b>C</b> while grounded to slide forward (press <b>Jump</b> mid-slide to cancel into a jump). Trophy weapons (earned from Boss Fights): <b>Shift+1</b> Warlord's Cleaver, <b>Shift+2</b> Skitterfang's Bone Repeater, <b>Shift+3</b> Reaper's Scythe Rifle. Tap <b>Shift</b> to lock/unlock the cursor. Abilities: <b>Q</b> Speed, <b>F</b> Glider, and press <b>Jump</b> again mid-air for Double/Triple Jump. Tactical deployables (buy in shop): <b>G</b> Grenade, <b>V</b> Landmine, <b>T</b> Auto-Turret, <b>B</b> Barracks.</div>
+    <div class="setting-note">Aim with the <b>Mouse</b>, shoot with <b>Left Click</b>, switch weapons with <b>1–9</b> (fixed). Press <b>C</b> while grounded to slide forward (press <b>Jump</b> mid-slide to cancel into a jump). Trophy weapons (earned from Boss Fights): <b>Shift+1</b> Warlord's Cleaver, <b>Shift+2</b> Skitterfang's Bone Repeater, <b>Shift+3</b> Reaper's Scythe Rifle. Tap <b>Shift</b> to lock/unlock the cursor. Abilities: <b>Q</b> Speed, <b>F</b> Glider, <b>Z</b> (hold) Shield, and press <b>Jump</b> again mid-air for Double/Triple Jump. Tactical deployables (buy in shop): <b>G</b> Grenade, <b>V</b> Landmine, <b>T</b> Auto-Turret, <b>B</b> Barracks.</div>
   </div>
   <div class="settings-actions">
     <button class="btn secondary" id="settings-reset">Reset to Defaults</button>
@@ -584,11 +585,14 @@ function onResize() {
 const obstacles = []; // {min:{x,z}, max:{x,z}} AABBs for collision (main arena)
 const ctfObstacles = []; // same, for the larger CTF arena
 let activeObstacles = obstacles; // whichever arena is currently active
+const mainPlatforms = []; // {min:{x,z}, max:{x,z}, top} hill mounds you can climb on top of (main arena)
+const ctfPlatforms = []; // same, for the CTF arena's parkour blocks + vantage tower
+let activePlatforms = mainPlatforms; // whichever arena is currently active
 let mainArenaGroup, ctfArenaGroup;
 
 function addBox(x, y, z, w, h, dpt, color) {
-  const geo = new THREE_.BoxGeometry(w, h, dpt);
-  const mat = new THREE_.MeshStandardMaterial({ color, flatShading: true, roughness: .9, metalness: .05 });
+  const geo = roundedBoxGeometry(w, h, dpt);
+  const mat = new THREE_.MeshStandardMaterial({ color, flatShading: false, roughness: .9, metalness: .05 });
   const mesh = new THREE_.Mesh(geo, mat);
   mesh.position.set(x, y, z);
   mesh.castShadow = true; mesh.receiveShadow = true;
@@ -597,20 +601,141 @@ function addBox(x, y, z, w, h, dpt, color) {
   return mesh;
 }
 
+// ---------- Terrain (rolling hills baked into the floor mesh, also used to ground-snap entities) ----------
+// FLAT_ZONES pull the noise down to 0 near spawns/crates/platforms so nothing sits misaligned.
+function terrainNoise(x, z) {
+  return Math.max(0, Math.sin(x * 0.05) + Math.cos(z * 0.045) + Math.sin((x + z) * 0.03) * 0.6) * 1.7;
+}
+function heightAt(x, z, zones) {
+  let factor = 1;
+  for (const fz of zones) {
+    const d = Math.hypot(x - fz.x, z - fz.z);
+    if (d < fz.r) factor = Math.min(factor, d / fz.r);
+  }
+  return terrainNoise(x, z) * factor;
+}
+// Displaces a ground PlaneGeometry to match heightAt. The plane is rotated flat afterward
+// (rotation.x = -PI/2), which maps local Z -> world Y (height) and local Y -> world -Z.
+function applyTerrain(geo, zones) {
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) pos.setZ(i, heightAt(pos.getX(i), -pos.getY(i), zones));
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+}
+
+function roundedRectShape(w, h, r) {
+  const x = -w / 2, y = -h / 2;
+  const s = new THREE_.Shape();
+  s.moveTo(x, y + r);
+  s.lineTo(x, y + h - r);
+  s.quadraticCurveTo(x, y + h, x + r, y + h);
+  s.lineTo(x + w - r, y + h);
+  s.quadraticCurveTo(x + w, y + h, x + w, y + h - r);
+  s.lineTo(x + w, y + r);
+  s.quadraticCurveTo(x + w, y, x + w - r, y);
+  s.lineTo(x + r, y);
+  s.quadraticCurveTo(x, y, x, y + r);
+  return s;
+}
+// Drop-in replacement for `new THREE_.BoxGeometry(w, h, d)`: rounds the corners/edges so
+// "boxy" parts (weapons, character bodies, structures) read as smooth/curved rather than
+// sharp low-poly. Falls back to a plain box for parts too thin to visibly round.
+function roundedBoxGeometry(w, h, d) {
+  if (w < 0.012 || h < 0.012 || d < 0.012) return new THREE_.BoxGeometry(w, h, d);
+  const r = Math.min(Math.min(w, h) * 0.22, w / 2 - 0.004, h / 2 - 0.004);
+  const shape = roundedRectShape(w, h, r);
+  const bevel = Math.min(r, d / 2 - 0.004);
+  const geo = new THREE_.ExtrudeGeometry(shape, {
+    depth: d - bevel * 2, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 3, curveSegments: 4,
+  });
+  geo.translate(0, 0, -d / 2 + bevel);
+  geo.computeVertexNormals();
+  return geo;
+}
+const MAIN_FLAT_ZONES = [
+  { x: 0, z: 0, r: 14 }, { x: 0, z: ARENA - 10, r: 16 }, { x: 0, z: -(ARENA - 8), r: 16 },
+  { x: -20, z: 6, r: 6 }, { x: 22, z: 8, r: 6 }, { x: 0, z: 5, r: 7 },
+  { x: -30, z: -25, r: 6 }, { x: 30, z: -20, r: 7 }, { x: -12, z: 28, r: 6 },
+  { x: 18, z: 30, r: 6 }, { x: -38, z: 14, r: 7 }, { x: 40, z: 36, r: 6 },
+  { x: 10, z: -32, r: 7 }, { x: -25, z: 38, r: 6 }, { x: 36, z: -38, r: 6 },
+];
+const CTF_FLAT_ZONES = [
+  { x: 0, z: -(CTF_ARENA - 15), r: 16 },
+  { x: -24, z: -85, r: 6 }, { x: -14, z: -70, r: 6 }, { x: -4, z: -78, r: 6 },
+  { x: 22, z: -60, r: 6 }, { x: 30, z: -45, r: 6 }, { x: 16, z: -32, r: 6 },
+  { x: -28, z: -20, r: 6 }, { x: -30, z: -3, r: 7 }, { x: -18, z: 10, r: 6 },
+  { x: 26, z: 5, r: 6 }, { x: 34, z: 22, r: 6 }, { x: 20, z: 38, r: 6 },
+  { x: -22, z: 45, r: 6 }, { x: -8, z: 62, r: 6 }, { x: 10, z: 75, r: 6 },
+  { x: -30, z: 85, r: 6 },
+  { x: 108, z: 48, r: 7 }, { x: 112, z: 52, r: 6 }, { x: 108, z: 56, r: 6 },
+  { x: 112, z: 60, r: 6 }, { x: 108, z: 64, r: 8 },
+];
+
+// ---------- Procedural grass texture + scattered blade tufts ----------
+function makeGrassTexture(size = 256) {
+  const cvs = document.createElement('canvas'); cvs.width = cvs.height = size;
+  const ctx = cvs.getContext('2d');
+  ctx.fillStyle = '#3d6b2e'; ctx.fillRect(0, 0, size, size);
+  for (let i = 0; i < 2500; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const l = 20 + Math.random() * 18;
+    ctx.fillStyle = `hsl(${95 + Math.random() * 20}, 45%, ${l}%)`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+  const tex = new THREE_.CanvasTexture(cvs);
+  tex.wrapS = tex.wrapT = THREE_.RepeatWrapping;
+  return tex;
+}
+// A field of small billboard-style grass-blade clusters, skipping any spot inside a
+// crate/wall/platform footprint. Uses one InstancedMesh per arena (cheap to render).
+function buildGrassTufts(group, half, obstacleLists, zones, platforms, count) {
+  const bladeGeo = new THREE_.PlaneGeometry(0.45, 0.6);
+  bladeGeo.translate(0, 0.3, 0);
+  const bladeMat = new THREE_.MeshStandardMaterial({ color: 0x4f9c3a, flatShading: false, side: THREE_.DoubleSide, roughness: .85 });
+  const perTuft = 3;
+  const inst = new THREE_.InstancedMesh(bladeGeo, bladeMat, count * perTuft);
+  const dummy = new THREE_.Object3D();
+  let placed = 0, tries = 0, idx = 0;
+  while (placed < count && tries < count * 6) {
+    tries++;
+    const x = (Math.random() * 2 - 1) * (half - 3);
+    const z = (Math.random() * 2 - 1) * (half - 3);
+    let blocked = false;
+    for (const list of obstacleLists) {
+      for (const o of list) {
+        if (o.baseR !== undefined) {
+          if (Math.hypot(x - o.x, z - o.z) < o.baseR + 1) { blocked = true; break; }
+        } else if (x > o.min.x - 1 && x < o.max.x + 1 && z > o.min.z - 1 && z < o.max.z + 1) { blocked = true; break; }
+      }
+      if (blocked) break;
+    }
+    if (blocked) continue;
+    const y = Math.max(heightAt(x, z, zones), moundHeightAt(x, z, platforms));
+    for (let k = 0; k < perTuft; k++) {
+      dummy.position.set(x + (Math.random() - 0.5) * 0.4, y, z + (Math.random() - 0.5) * 0.4);
+      dummy.rotation.set((Math.random() - 0.5) * 0.2, Math.random() * Math.PI, 0);
+      dummy.scale.setScalar(0.8 + Math.random() * 0.5);
+      dummy.updateMatrix();
+      inst.setMatrixAt(idx++, dummy.matrix);
+    }
+    placed++;
+  }
+  inst.count = idx;
+  group.add(inst);
+}
+
 function buildArena() {
   mainArenaGroup = new THREE_.Group();
   scene.add(mainArenaGroup);
 
-  // Floor
-  const floorGeo = new THREE_.PlaneGeometry(ARENA*2, ARENA*2, 24, 24);
-  const floorMat = new THREE_.MeshStandardMaterial({ color: 0x2b2f45, roughness: 1, flatShading: true });
+  // Floor — rolling grass hills (flat near spawns/crates, see MAIN_FLAT_ZONES)
+  const floorGeo = new THREE_.PlaneGeometry(ARENA*2, ARENA*2, 48, 48);
+  applyTerrain(floorGeo, MAIN_FLAT_ZONES);
+  const floorMat = new THREE_.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: false, map: makeGrassTexture() });
+  floorMat.map.repeat.set(16, 16);
   const floor = new THREE_.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
   mainArenaGroup.add(floor);
-
-  // Grid overlay
-  const grid = new THREE_.GridHelper(ARENA*2, 40, 0x4455aa, 0x33384f);
-  grid.position.y = 0.02; mainArenaGroup.add(grid);
 
   // Perimeter walls (also collidable)
   const wallH = 8, t = 2, wc = 0x3a4060;
@@ -619,8 +744,8 @@ function buildArena() {
   addBox(-ARENA, wallH/2, 0, t, wallH, ARENA*2, wc);
   addBox( ARENA, wallH/2, 0, t, wallH, ARENA*2, wc);
 
-  // Scattered cover blocks (low-poly crates / pillars)
-  const palette = [0x5a4ea8, 0xa85a5a, 0x4ea88a, 0xa8975a, 0x5a82a8];
+  // Scattered cover: grassy hill mounds you can climb on top of or hide behind
+  const palette = [0x5a8a3a, 0x6a9a48, 0x4e8a5a, 0x7a9a4a, 0x5a8a52];
   const layout = [
     [-20, 0, 6, 5, 6], [22, 0, 8, 7, 4], [0, 0, 5, 9, 5],
     [-30, 0, -25, 6, 6], [30, 0, -20, 8, 4], [-12, 0, 28, 6, 4],
@@ -629,16 +754,18 @@ function buildArena() {
   ];
   layout.forEach((b, i) => {
     const h = 3 + (i % 3) * 1.8;
-    addBox(b[0], h/2, b[2], b[3], h, b[4], palette[i % palette.length]);
+    addHillPlatform(mainArenaGroup, mainPlatforms, b[0], b[2], b[3], b[4], h, palette[i % palette.length]);
   });
+
+  buildGrassTufts(mainArenaGroup, ARENA, [obstacles, mainPlatforms], MAIN_FLAT_ZONES, mainPlatforms, 240);
 }
 
 // ---------- CTF arena (much bigger, so the flag run is a real trek) ----------
 const CTF_BASE = { x: 0, z: -(CTF_ARENA - 15) };  // player spawn / return-to-capture point
 
 function addCtfBox(x, y, z, w, h, dpt, color) {
-  const geo = new THREE_.BoxGeometry(w, h, dpt);
-  const mat = new THREE_.MeshStandardMaterial({ color, flatShading: true, roughness: .9, metalness: .05 });
+  const geo = roundedBoxGeometry(w, h, dpt);
+  const mat = new THREE_.MeshStandardMaterial({ color, flatShading: false, roughness: .9, metalness: .05 });
   const mesh = new THREE_.Mesh(geo, mat);
   mesh.position.set(x, y, z);
   mesh.castShadow = true; mesh.receiveShadow = true;
@@ -656,7 +783,7 @@ function addGlowBeacon(group, x, z, color, opts = {}) {
   const lightRange = opts.lightRange ?? 40;
 
   const padMat = new THREE_.MeshStandardMaterial({
-    color, emissive: color, emissiveIntensity: .6, flatShading: true, transparent: true, opacity: .9,
+    color, emissive: color, emissiveIntensity: .6, flatShading: false, transparent: true, opacity: .9,
   });
   const pad = new THREE_.Mesh(new THREE_.CylinderGeometry(groundRadius, groundRadius, 0.3, 24), padMat);
   pad.position.set(x, 0.15, z);
@@ -680,14 +807,13 @@ function buildCtfArena() {
   ctfArenaGroup.visible = false;
   scene.add(ctfArenaGroup);
 
-  const floorGeo = new THREE_.PlaneGeometry(CTF_ARENA*2, CTF_ARENA*2, 40, 40);
-  const floorMat = new THREE_.MeshStandardMaterial({ color: 0x242a42, roughness: 1, flatShading: true });
+  const floorGeo = new THREE_.PlaneGeometry(CTF_ARENA*2, CTF_ARENA*2, 80, 80);
+  applyTerrain(floorGeo, CTF_FLAT_ZONES);
+  const floorMat = new THREE_.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: false, map: makeGrassTexture() });
+  floorMat.map.repeat.set(40, 40);
   const floor = new THREE_.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
   ctfArenaGroup.add(floor);
-
-  const grid = new THREE_.GridHelper(CTF_ARENA*2, 60, 0x4455aa, 0x2c314a);
-  grid.position.y = 0.02; ctfArenaGroup.add(grid);
 
   const wallH = 8, t = 2, wc = 0x30365a;
   addCtfBox(0,  wallH/2, -CTF_ARENA, CTF_ARENA*2, wallH, t, wc);
@@ -700,19 +826,27 @@ function buildCtfArena() {
 
   buildCtfParkour();
   buildCtfVantageTower();
+  buildGrassTufts(ctfArenaGroup, CTF_ARENA, [ctfObstacles, ctfPlatforms], CTF_FLAT_ZONES, ctfPlatforms, 420);
 }
 
-// A block you can jump on top of and stand on (registered in ctfPlatforms for collision)
-function addCtfPlatform(x, z, w, d, h, color) {
-  const geo = new THREE_.BoxGeometry(w, h, d);
-  const mat = new THREE_.MeshStandardMaterial({ color, flatShading: true, roughness: .85 });
-  const mesh = new THREE_.Mesh(geo, mat);
+// A grassy hill mound with a walkable sloped side (registered as a platform: its cone-shaped
+// ramp feeds into groundYAt, so the player/enemies climb it by walking, same as the base terrain hills).
+function addHillPlatform(group, platformsArr, x, z, w, d, h, color) {
+  const topR = Math.min(w, d) * 0.3;
+  const baseR = Math.max(w, d) * 0.85;
+  const sideMat = new THREE_.MeshStandardMaterial({ color: 0x6b5335, flatShading: false, roughness: .95 });
+  const topMat = new THREE_.MeshStandardMaterial({ color, flatShading: false, roughness: .9 });
+  const geo = new THREE_.CylinderGeometry(topR, baseR, h, 16);
+  const mesh = new THREE_.Mesh(geo, [sideMat, topMat, topMat]);
   mesh.position.set(x, h/2, z);
   mesh.castShadow = true; mesh.receiveShadow = true;
-  ctfArenaGroup.add(mesh);
-  const plat = { min: { x: x - w/2, z: z - d/2 }, max: { x: x + w/2, z: z + d/2 }, top: h };
-  ctfPlatforms.push(plat);
+  group.add(mesh);
+  const plat = { min: { x: x - w/2, z: z - d/2 }, max: { x: x + w/2, z: z + d/2 }, top: h, x, z, topR, baseR, h };
+  platformsArr.push(plat);
   return plat;
+}
+function addCtfPlatform(x, z, w, d, h, color) {
+  return addHillPlatform(ctfArenaGroup, ctfPlatforms, x, z, w, d, h, color);
 }
 
 // A scattered cluster of jump blocks along the base-to-flag corridor — all optional
@@ -756,6 +890,7 @@ function setArenaMode(mode) {
   ctfArenaGroup.visible = isCtf;
   arenaHalf = isCtf ? CTF_ARENA : ARENA;
   activeObstacles = isCtf ? ctfObstacles : obstacles;
+  activePlatforms = isCtf ? ctfPlatforms : mainPlatforms;
 }
 
 // ---------- Player ----------
@@ -938,6 +1073,7 @@ document.addEventListener('keydown', e => {
   // abilities
   if (e.code === ABILITIES.speed.key) activateAbility('speed');
   if (e.code === ABILITIES.glider.key) activateAbility('glider');
+  if (e.code === ABILITIES.shield.key && !e.repeat) raiseShield();
   // deployables (throwables / explosives / structures)
   if (!e.repeat) for (const dk in DEPLOYABLES) if (e.code === DEPLOYABLES[dk].key) deployItem(dk);
 });
@@ -972,6 +1108,7 @@ function activateAbility(key) {
 }
 document.addEventListener('keyup', e => {
   keys[e.code] = false;
+  if (e.code === ABILITIES.shield.key) lowerShield();
   // Shift tapped alone (no other key in between) -> unlock the cursor
   if (e.key === 'Shift' && shiftMaybeTap) {
     shiftMaybeTap = false;
@@ -1086,8 +1223,34 @@ const ABILITIES = {
   glider: { name: 'Glider',      desc: 'Fly faster + slow fall', icon: '🪂', keyLabel: 'F', key: 'KeyF', price: 1100, owned: false, cdEnd: 0, dur: 4 },
   djump:  { name: 'Double Jump', desc: 'Jump again mid-air', icon: '⤴', keyLabel: 'Jump×2', key: null, price: 900, owned: false, cdEnd: 0 },
   tjump:  { name: 'Triple Jump', desc: 'Two extra mid-air jumps', icon: '⤊', keyLabel: 'Jump×3', key: null, price: 1500, owned: false, cdEnd: 0 },
+  shield: { name: 'Energy Shield', desc: 'Hold: blocks 200 dmg, -35% speed', icon: '🛡️', keyLabel: 'Z', key: 'KeyZ', price: 1300, owned: false, cdEnd: 0 },
 };
 let speedBoostEnd = 0, gliderActive = false, gliderEnd = 0, airJumps = 0;
+
+// ---------- Shield ability (hold Z: absorbs damage into durability instead of health, until it breaks) ----------
+const SHIELD_MAX_HP = 200;
+const SHIELD_SPEED_MUL = 0.65;
+let shieldActive = false, shieldHp = 0;
+
+function raiseShield() {
+  const a = ABILITIES.shield;
+  const t = clock.elapsedTime;
+  if (!a.owned || shieldActive) return;
+  if (!ADMIN.noCd && t < a.cdEnd) return;
+  shieldActive = true; shieldHp = SHIELD_MAX_HP;
+}
+function lowerShield() {
+  if (!shieldActive) return;
+  shieldActive = false;
+  ABILITIES.shield.cdEnd = ADMIN.noCd ? 0 : clock.elapsedTime + ABILITY_CD;
+}
+// Feeds incoming player damage through the shield first; returns the leftover to apply to health.
+function absorbShield(dmg) {
+  if (!shieldActive) return dmg;
+  shieldHp -= dmg;
+  if (shieldHp <= 0) { shieldHp = 0; lowerShield(); }
+  return 0;
+}
 
 // ---------- Deployables (throwables / explosives / structures — bought in shop, per-item cooldown) ----------
 // Like abilities, each is unlocked once with coins, then used with its own cooldown. Placed
@@ -1124,7 +1287,7 @@ function updateCoinsHUD() { document.getElementById('coins').textContent = '🪙
 // ---------- Explosions (rocket splash FX) ----------
 const explosions = [];
 function spawnExplosion(pos, radius) {
-  const m = new THREE_.Mesh(new THREE_.SphereGeometry(1, 12, 12),
+  const m = new THREE_.Mesh(new THREE_.SphereGeometry(1, 16, 16),
     new THREE_.MeshBasicMaterial({ color: 0xff8a3a, transparent: true, opacity: 0.85 }));
   m.position.copy(pos); m.scale.setScalar(0.1); scene.add(m);
   const light = new THREE_.PointLight(0xff7a2a, 6, radius * 5); light.position.copy(pos); scene.add(light);
@@ -1135,7 +1298,7 @@ function spawnExplosion(pos, radius) {
 const PROJECTILE_DMG = 15;
 const projectiles = [];
 function spawnEnemyProjectile(e, angleOffset = 0, dmg = PROJECTILE_DMG) {
-  const from = e.group.position.clone(); from.y = 1.6;
+  const from = e.group.position.clone(); from.y += 1.6;
   const bulletSpeed = e.bulletSpeed || 34;
   // lead the shot: predict where the player will be when the bullet arrives, based on current strafe velocity
   const leadTime = from.distanceTo(camera.position) / bulletSpeed;
@@ -1144,7 +1307,7 @@ function spawnEnemyProjectile(e, angleOffset = 0, dmg = PROJECTILE_DMG) {
   target.z += player.vel.z * leadTime;
   const dir = new THREE_.Vector3().subVectors(target, from).normalize();
   if (angleOffset) dir.applyAxisAngle(new THREE_.Vector3(0, 1, 0), angleOffset);
-  const m = new THREE_.Mesh(new THREE_.SphereGeometry(0.22, 8, 8),
+  const m = new THREE_.Mesh(new THREE_.SphereGeometry(0.22, 12, 12),
     new THREE_.MeshBasicMaterial({ color: 0x8bff5a }));
   m.position.copy(from); scene.add(m);
   projectiles.push({ m, vel: dir.multiplyScalar(bulletSpeed), life: 0, dmg });
@@ -1160,7 +1323,7 @@ function updateProjectiles(dt) {
     if (!dead && p.m.position.distanceTo(camera.position) < 1.1) {
       dead = true;
       if (!ADMIN.godMode) {
-        player.health -= p.dmg;
+        player.health -= absorbShield(p.dmg);
         lastDamageTime = clock.elapsedTime;
         updateHealthHUD();
         damageFlash();
@@ -1184,9 +1347,10 @@ function updateProjectiles(dt) {
 //  Deployables: grenades, landmines, auto-turrets, barracks
 // ============================================================
 
-// ground height at an x/z (accounts for CTF stand-on platforms)
+// ground height at an x/z (rolling terrain, plus hill mounds' cone-shaped ramp on top of it)
 function groundYAt(x, z) {
-  return arenaHalf === CTF_ARENA ? platformTopAt(x, z) : 0;
+  const zones = arenaHalf === CTF_ARENA ? CTF_FLAT_ZONES : MAIN_FLAT_ZONES;
+  return Math.max(heightAt(x, z, zones), moundHeightAt(x, z, activePlatforms));
 }
 
 // AoE damage falloff — used by grenade & mine blasts
@@ -1214,10 +1378,10 @@ function spawnTracer(a, b, color) {
 // ---- models ----
 function buildGrenadeModel() {
   const g = new THREE_.Group();
-  const shell = new THREE_.Mesh(new THREE_.SphereGeometry(0.16, 8, 6),
-    new THREE_.MeshStandardMaterial({ color: 0x3a5a2a, flatShading: true, roughness: .7 }));
-  const cap = new THREE_.Mesh(new THREE_.CylinderGeometry(0.07, 0.07, 0.08, 6),
-    new THREE_.MeshStandardMaterial({ color: 0x555555, flatShading: true, metalness: .5 }));
+  const shell = new THREE_.Mesh(new THREE_.SphereGeometry(0.16, 12, 10),
+    new THREE_.MeshStandardMaterial({ color: 0x3a5a2a, flatShading: false, roughness: .7 }));
+  const cap = new THREE_.Mesh(new THREE_.CylinderGeometry(0.07, 0.07, 0.08, 12),
+    new THREE_.MeshStandardMaterial({ color: 0x555555, flatShading: false, metalness: .5 }));
   cap.position.y = 0.17;
   g.add(shell, cap);
   return g;
@@ -1225,19 +1389,19 @@ function buildGrenadeModel() {
 
 function buildMineModel() {
   const g = new THREE_.Group();
-  const disc = new THREE_.Mesh(new THREE_.CylinderGeometry(0.55, 0.62, 0.18, 10),
-    new THREE_.MeshStandardMaterial({ color: 0x2c2f24, flatShading: true, roughness: .85, metalness: .2 }));
+  const disc = new THREE_.Mesh(new THREE_.CylinderGeometry(0.55, 0.62, 0.18, 16),
+    new THREE_.MeshStandardMaterial({ color: 0x2c2f24, flatShading: false, roughness: .85, metalness: .2 }));
   disc.position.y = 0.09;
-  const dome = new THREE_.Mesh(new THREE_.SphereGeometry(0.22, 8, 6, 0, Math.PI*2, 0, Math.PI/2),
-    new THREE_.MeshStandardMaterial({ color: 0x44341a, flatShading: true }));
+  const dome = new THREE_.Mesh(new THREE_.SphereGeometry(0.22, 12, 10, 0, Math.PI*2, 0, Math.PI/2),
+    new THREE_.MeshStandardMaterial({ color: 0x44341a, flatShading: false }));
   dome.position.y = 0.18;
-  const light = new THREE_.Mesh(new THREE_.SphereGeometry(0.07, 6, 6),
+  const light = new THREE_.Mesh(new THREE_.SphereGeometry(0.07, 8, 8),
     new THREE_.MeshBasicMaterial({ color: 0xff2b2b }));
   light.position.y = 0.36;
   for (let i = 0; i < 3; i++) {
     const a = i * (Math.PI * 2 / 3);
-    const prong = new THREE_.Mesh(new THREE_.BoxGeometry(0.05, 0.16, 0.05),
-      new THREE_.MeshStandardMaterial({ color: 0x777777, flatShading: true, metalness: .5 }));
+    const prong = new THREE_.Mesh(roundedBoxGeometry(0.05, 0.16, 0.05),
+      new THREE_.MeshStandardMaterial({ color: 0x777777, flatShading: false, metalness: .5 }));
     prong.position.set(Math.sin(a) * 0.4, 0.24, Math.cos(a) * 0.4);
     prong.rotation.x = Math.cos(a) * 0.4; prong.rotation.z = -Math.sin(a) * 0.4;
     g.add(prong);
@@ -1249,20 +1413,20 @@ function buildMineModel() {
 
 function buildTurretModel() {
   const g = new THREE_.Group();
-  const steel = new THREE_.MeshStandardMaterial({ color: 0x51617a, flatShading: true, roughness: .5, metalness: .55 });
-  const dark  = new THREE_.MeshStandardMaterial({ color: 0x1c2130, flatShading: true, roughness: .6 });
-  const base = new THREE_.Mesh(new THREE_.CylinderGeometry(0.55, 0.7, 0.4, 10), steel);
+  const steel = new THREE_.MeshStandardMaterial({ color: 0x51617a, flatShading: false, roughness: .5, metalness: .55 });
+  const dark  = new THREE_.MeshStandardMaterial({ color: 0x1c2130, flatShading: false, roughness: .6 });
+  const base = new THREE_.Mesh(new THREE_.CylinderGeometry(0.55, 0.7, 0.4, 16), steel);
   base.position.y = 0.2; base.castShadow = true;
-  const post = new THREE_.Mesh(new THREE_.CylinderGeometry(0.18, 0.22, 0.5, 8), dark);
+  const post = new THREE_.Mesh(new THREE_.CylinderGeometry(0.18, 0.22, 0.5, 14), dark);
   post.position.y = 0.6;
   // rotating head
   const head = new THREE_.Group(); head.position.y = 0.95;
-  const housing = new THREE_.Mesh(new THREE_.BoxGeometry(0.7, 0.5, 0.7), steel);
+  const housing = new THREE_.Mesh(roundedBoxGeometry(0.7, 0.5, 0.7), steel);
   housing.castShadow = true;
-  const eye = new THREE_.Mesh(new THREE_.BoxGeometry(0.28, 0.14, 0.06),
+  const eye = new THREE_.Mesh(roundedBoxGeometry(0.28, 0.14, 0.06),
     new THREE_.MeshBasicMaterial({ color: 0x37d67a }));
   eye.position.set(0, 0.05, 0.36);
-  const barrelL = new THREE_.Mesh(new THREE_.CylinderGeometry(0.06, 0.06, 0.7, 6), dark);
+  const barrelL = new THREE_.Mesh(new THREE_.CylinderGeometry(0.06, 0.06, 0.7, 10), dark);
   barrelL.rotation.x = Math.PI / 2; barrelL.position.set(-0.14, -0.05, 0.5);
   const barrelR = barrelL.clone(); barrelR.position.x = 0.14;
   head.add(housing, eye, barrelL, barrelR);
@@ -1274,27 +1438,27 @@ function buildTurretModel() {
 
 function buildBarracksModel() {
   const g = new THREE_.Group();
-  const wall = new THREE_.MeshStandardMaterial({ color: 0x4a5a3a, flatShading: true, roughness: .9 });
-  const roof = new THREE_.MeshStandardMaterial({ color: 0x2f3a26, flatShading: true, roughness: .9 });
-  const dark = new THREE_.MeshStandardMaterial({ color: 0x20261a, flatShading: true });
-  const hut = new THREE_.Mesh(new THREE_.BoxGeometry(3.2, 2.2, 2.6), wall);
+  const wall = new THREE_.MeshStandardMaterial({ color: 0x4a5a3a, flatShading: false, roughness: .9 });
+  const roof = new THREE_.MeshStandardMaterial({ color: 0x2f3a26, flatShading: false, roughness: .9 });
+  const dark = new THREE_.MeshStandardMaterial({ color: 0x20261a, flatShading: false });
+  const hut = new THREE_.Mesh(roundedBoxGeometry(3.2, 2.2, 2.6), wall);
   hut.position.y = 1.1; hut.castShadow = true; hut.receiveShadow = true;
-  const top = new THREE_.Mesh(new THREE_.BoxGeometry(3.5, 0.5, 2.9), roof);
+  const top = new THREE_.Mesh(roundedBoxGeometry(3.5, 0.5, 2.9), roof);
   top.position.y = 2.35;
-  const door = new THREE_.Mesh(new THREE_.BoxGeometry(0.9, 1.4, 0.1), dark);
+  const door = new THREE_.Mesh(roundedBoxGeometry(0.9, 1.4, 0.1), dark);
   door.position.set(0, 0.7, 1.31);
   // sandbags along the front
   for (let i = -1; i <= 1; i++) {
-    const bag = new THREE_.Mesh(new THREE_.BoxGeometry(0.8, 0.4, 0.5),
-      new THREE_.MeshStandardMaterial({ color: 0x6b6141, flatShading: true, roughness: 1 }));
+    const bag = new THREE_.Mesh(roundedBoxGeometry(0.8, 0.4, 0.5),
+      new THREE_.MeshStandardMaterial({ color: 0x6b6141, flatShading: false, roughness: 1 }));
     bag.position.set(i * 0.95, 0.2, 1.7);
     g.add(bag);
   }
   // flag pole + banner
-  const pole = new THREE_.Mesh(new THREE_.CylinderGeometry(0.05, 0.05, 1.6, 6), dark);
+  const pole = new THREE_.Mesh(new THREE_.CylinderGeometry(0.05, 0.05, 1.6, 10), dark);
   pole.position.set(1.5, 3.1, 0);
   const banner = new THREE_.Mesh(new THREE_.PlaneGeometry(0.9, 0.55),
-    new THREE_.MeshStandardMaterial({ color: 0x4aa0ff, flatShading: true, side: THREE_.DoubleSide }));
+    new THREE_.MeshStandardMaterial({ color: 0x4aa0ff, flatShading: false, side: THREE_.DoubleSide }));
   banner.position.set(1.95, 3.5, 0);
   g.add(hut, top, door, pole, banner);
   return g;
@@ -1302,22 +1466,22 @@ function buildBarracksModel() {
 
 // Friendly soldier spawned by a barracks — blocky blue avatar in the shared art style
 function buildAllyModel() {
-  const suit = new THREE_.MeshStandardMaterial({ color: 0x3a6bd6, flatShading: true, roughness: .7 });
-  const skin = new THREE_.MeshStandardMaterial({ color: 0xd8a878, flatShading: true });
+  const suit = new THREE_.MeshStandardMaterial({ color: 0x3a6bd6, flatShading: false, roughness: .7 });
+  const skin = new THREE_.MeshStandardMaterial({ color: 0xd8a878, flatShading: false });
   const g = new THREE_.Group();
-  const body = new THREE_.Mesh(new THREE_.BoxGeometry(0.55, 0.7, 0.36), suit);
+  const body = new THREE_.Mesh(roundedBoxGeometry(0.55, 0.7, 0.36), suit);
   body.position.y = 1.0; body.castShadow = true;
-  const head = new THREE_.Mesh(new THREE_.BoxGeometry(0.38, 0.38, 0.38), skin);
+  const head = new THREE_.Mesh(roundedBoxGeometry(0.38, 0.38, 0.38), skin);
   head.position.y = 1.55;
-  const helm = new THREE_.Mesh(new THREE_.BoxGeometry(0.44, 0.18, 0.44), suit);
+  const helm = new THREE_.Mesh(roundedBoxGeometry(0.44, 0.18, 0.44), suit);
   helm.position.y = 1.74;
-  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 0.6, 0.16), suit);
+  const armL = new THREE_.Mesh(roundedBoxGeometry(0.16, 0.6, 0.16), suit);
   armL.position.set(-0.38, 1.0, 0);
   const armR = armL.clone(); armR.position.x = 0.38;
-  const gun = new THREE_.Mesh(new THREE_.BoxGeometry(0.13, 0.13, 0.55),
-    new THREE_.MeshStandardMaterial({ color: 0x8af0ff, flatShading: true }));
+  const gun = new THREE_.Mesh(roundedBoxGeometry(0.13, 0.13, 0.55),
+    new THREE_.MeshStandardMaterial({ color: 0x8af0ff, flatShading: false }));
   gun.position.set(0, -0.18, -0.28); gun.rotation.x = -0.2; armR.add(gun);
-  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.2, 0.7, 0.2), suit);
+  const legL = new THREE_.Mesh(roundedBoxGeometry(0.2, 0.7, 0.2), suit);
   legL.position.set(-0.14, 0.35, 0);
   const legR = legL.clone(); legR.position.x = 0.14;
   g.add(body, head, helm, armL, armR, legL, legR);
@@ -1541,6 +1705,7 @@ function updateAllies(dt) {
       if (dist > cfg.allyRange) {
         const step = cfg.allySpeed * dt / dist;
         collideMove(a.group.position, dx * step, dz * step);
+        a.group.position.y = groundYAt(a.group.position.x, a.group.position.z);
         moving = true;
       }
       // fire on the target when within a comfortable range
@@ -1605,21 +1770,21 @@ function updateDeployablesHUD() {
 // first-person view model and the spinning shop preview thumbnails).
 function buildGunModel(w) {
   const group = new THREE_.Group();
-  const bodyMat   = new THREE_.MeshStandardMaterial({ color: 0x2a2d3a, flatShading: true, roughness: .6,  metalness: .4 });
-  const steelMat  = new THREE_.MeshStandardMaterial({ color: 0x6b7280, flatShading: true, roughness: .35, metalness: .6 });
-  const darkMat   = new THREE_.MeshStandardMaterial({ color: 0x14151c, flatShading: true, roughness: .7,  metalness: .3 });
-  const accentMat = new THREE_.MeshStandardMaterial({ color: w.color,  flatShading: true, emissive: w.color, emissiveIntensity: .35 });
-  const wornSteelMat = new THREE_.MeshStandardMaterial({ color: 0x4a4d57, flatShading: true, roughness: .75, metalness: .55 });
-  const boneMat      = new THREE_.MeshStandardMaterial({ color: 0xd9cdb0, flatShading: true, roughness: .85, metalness: .05 });
-  const chitinMat    = new THREE_.MeshStandardMaterial({ color: 0x2b3324, flatShading: true, roughness: .6,  metalness: .2 });
-  const leatherMat   = new THREE_.MeshStandardMaterial({ color: 0x3b2a1d, flatShading: true, roughness: .9,  metalness: 0 });
-  const runeMat      = new THREE_.MeshStandardMaterial({ color: w.color,  flatShading: true, emissive: w.color, emissiveIntensity: .18 });
+  const bodyMat   = new THREE_.MeshStandardMaterial({ color: 0x2a2d3a, flatShading: false, roughness: .6,  metalness: .4 });
+  const steelMat  = new THREE_.MeshStandardMaterial({ color: 0x6b7280, flatShading: false, roughness: .35, metalness: .6 });
+  const darkMat   = new THREE_.MeshStandardMaterial({ color: 0x14151c, flatShading: false, roughness: .7,  metalness: .3 });
+  const accentMat = new THREE_.MeshStandardMaterial({ color: w.color,  flatShading: false, emissive: w.color, emissiveIntensity: .35 });
+  const wornSteelMat = new THREE_.MeshStandardMaterial({ color: 0x4a4d57, flatShading: false, roughness: .75, metalness: .55 });
+  const boneMat      = new THREE_.MeshStandardMaterial({ color: 0xd9cdb0, flatShading: false, roughness: .85, metalness: .05 });
+  const chitinMat    = new THREE_.MeshStandardMaterial({ color: 0x2b3324, flatShading: false, roughness: .6,  metalness: .2 });
+  const leatherMat   = new THREE_.MeshStandardMaterial({ color: 0x3b2a1d, flatShading: false, roughness: .9,  metalness: 0 });
+  const runeMat      = new THREE_.MeshStandardMaterial({ color: w.color,  flatShading: false, emissive: w.color, emissiveIntensity: .18 });
 
   const addBox = (sx, sy, sz, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
-    const m = new THREE_.Mesh(new THREE_.BoxGeometry(sx, sy, sz), mat);
+    const m = new THREE_.Mesh(roundedBoxGeometry(sx, sy, sz), mat);
     m.position.set(x, y, z); m.rotation.set(rx, ry, rz); group.add(m); return m;
   };
-  const addCyl = (r, len, mat, x, y, z, rx = Math.PI / 2, ry = 0, rz = 0, seg = 10) => {
+  const addCyl = (r, len, mat, x, y, z, rx = Math.PI / 2, ry = 0, rz = 0, seg = 16) => {
     const m = new THREE_.Mesh(new THREE_.CylinderGeometry(r, r, len, seg), mat);
     m.position.set(x, y, z); m.rotation.set(rx, ry, rz); group.add(m); return m;
   };
@@ -1739,12 +1904,12 @@ function buildGunModel(w) {
     addBox(0.09, 0.18, 0.12, darkMat, 0, -0.19, -0.05, 0.1, 0, 0);
     addBox(0.03, 0.03, 0.06, accentMat, 0, 0.13, -0.5);
   } else {
-    const body = new THREE_.Mesh(new THREE_.BoxGeometry(0.18, 0.18, 0.55), bodyMat);
-    const barrel = new THREE_.Mesh(new THREE_.BoxGeometry(0.08, 0.08, 0.5), bodyMat);
+    const body = new THREE_.Mesh(roundedBoxGeometry(0.18, 0.18, 0.55), bodyMat);
+    const barrel = new THREE_.Mesh(roundedBoxGeometry(0.08, 0.08, 0.5), bodyMat);
     barrel.position.set(0, 0.02, -0.55);
-    const accent = new THREE_.Mesh(new THREE_.BoxGeometry(0.2, 0.05, 0.2), accentMat);
+    const accent = new THREE_.Mesh(roundedBoxGeometry(0.2, 0.05, 0.2), accentMat);
     accent.position.set(0, 0.12, 0.05);
-    const grip = new THREE_.Mesh(new THREE_.BoxGeometry(0.12, 0.26, 0.14), bodyMat);
+    const grip = new THREE_.Mesh(roundedBoxGeometry(0.12, 0.26, 0.14), bodyMat);
     grip.position.set(0, -0.2, 0.18);
     group.add(body, barrel, accent, grip);
   }
@@ -1766,7 +1931,7 @@ function buildViewModel() {
 let muzzle, muzzleLight, muzzleTimer = 0;
 function initMuzzle() {
   muzzle = new THREE_.Mesh(
-    new THREE_.SphereGeometry(0.12, 6, 6),
+    new THREE_.SphereGeometry(0.12, 8, 8),
     new THREE_.MeshBasicMaterial({ color: 0xfff0a0 })
   );
   muzzle.visible = false;
@@ -1784,22 +1949,22 @@ function buildPlayerAvatar() {
 
   playerAvatar = new THREE_.Group();
 
-  avatarBody = new THREE_.Mesh(new THREE_.BoxGeometry(0.6, 0.75, 0.4), suitMat);
+  avatarBody = new THREE_.Mesh(roundedBoxGeometry(0.6, 0.75, 0.4), suitMat);
   avatarBody.position.y = 1.05;
-  const avatarHead = new THREE_.Mesh(new THREE_.BoxGeometry(0.42, 0.42, 0.42), skinMat);
+  const avatarHead = new THREE_.Mesh(roundedBoxGeometry(0.42, 0.42, 0.42), skinMat);
   avatarHead.position.y = 1.65;
 
-  avatarArmL = new THREE_.Mesh(new THREE_.BoxGeometry(0.2, 0.7, 0.2), suitMat);
+  avatarArmL = new THREE_.Mesh(roundedBoxGeometry(0.2, 0.7, 0.2), suitMat);
   avatarArmL.position.set(-0.42, 1.05, 0);
-  avatarArmR = new THREE_.Mesh(new THREE_.BoxGeometry(0.2, 0.7, 0.2), suitMat);
+  avatarArmR = new THREE_.Mesh(roundedBoxGeometry(0.2, 0.7, 0.2), suitMat);
   avatarArmR.position.set(0.42, 1.05, 0);
 
-  avatarLegL = new THREE_.Mesh(new THREE_.BoxGeometry(0.24, 0.8, 0.24), suitMat);
+  avatarLegL = new THREE_.Mesh(roundedBoxGeometry(0.24, 0.8, 0.24), suitMat);
   avatarLegL.position.set(-0.16, 0.4, 0);
-  avatarLegR = new THREE_.Mesh(new THREE_.BoxGeometry(0.24, 0.8, 0.24), suitMat);
+  avatarLegR = new THREE_.Mesh(roundedBoxGeometry(0.24, 0.8, 0.24), suitMat);
   avatarLegR.position.set(0.16, 0.4, 0);
 
-  avatarGun = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 0.16, 0.6),
+  avatarGun = new THREE_.Mesh(roundedBoxGeometry(0.16, 0.16, 0.6),
     new THREE_.MeshStandardMaterial({ color: WEAPONS[curWeapon].color }));
   avatarGun.position.set(0, -0.42, -0.28);
   avatarGun.rotation.x = -1.15;
@@ -1939,7 +2104,7 @@ function meleeAttack(w) {
     if (dir.x * toE.x + dir.z * toE.z > coneDot) {
       // approximate headshot: is the camera's aim pitch pointed at/above head height at this range?
       const aimY = camPos.y + dir.y * d;
-      const headshot = aimY >= e.headBottomY;
+      const headshot = aimY >= e.group.position.y + e.headBottomY;
       // any melee weapon kills a boss in exactly 5 hits, regardless of the weapon's own damage stat
       const dmg = e.isBoss ? Math.ceil(e.maxHp / 5) : w.dmg;
       damageEnemy(e, dmg, e.group.position, headshot);
@@ -1964,34 +2129,34 @@ function headBottomY(head) {
 
 function spawnEnemy(posOverride) {
   const g = new THREE_.Group();
-  const mat = new THREE_.MeshStandardMaterial({ color: 0x8a1428, flatShading: true, roughness: .85, emissive: 0x1a0505, emissiveIntensity: .35 });
-  const darkMat = new THREE_.MeshStandardMaterial({ color: 0x1c1417, flatShading: true, roughness: .7 });
-  const teethMat = new THREE_.MeshStandardMaterial({ color: 0xe8e0c8, flatShading: true });
+  const mat = new THREE_.MeshStandardMaterial({ color: 0x8a1428, flatShading: false, roughness: .85, emissive: 0x1a0505, emissiveIntensity: .35 });
+  const darkMat = new THREE_.MeshStandardMaterial({ color: 0x1c1417, flatShading: false, roughness: .7 });
+  const teethMat = new THREE_.MeshStandardMaterial({ color: 0xe8e0c8, flatShading: false });
   const eyeMat = new THREE_.MeshBasicMaterial({ color: 0xff3300 });
 
   // hunched torso: broad chest tapering to a narrow waist, leaning forward
-  const body = new THREE_.Mesh(new THREE_.BoxGeometry(1.05, 0.95, 0.72), mat);
+  const body = new THREE_.Mesh(roundedBoxGeometry(1.05, 0.95, 0.72), mat);
   body.position.set(0, 1.55, 0.05); body.rotation.x = 0.12; body.castShadow = true;
-  const waist = new THREE_.Mesh(new THREE_.BoxGeometry(0.68, 0.55, 0.55), mat);
+  const waist = new THREE_.Mesh(roundedBoxGeometry(0.68, 0.55, 0.55), mat);
   waist.position.y = 1.05;
 
-  const head = new THREE_.Mesh(new THREE_.BoxGeometry(0.7, 0.65, 0.68), mat);
+  const head = new THREE_.Mesh(roundedBoxGeometry(0.7, 0.65, 0.68), mat);
   head.position.set(0, 2.15, 0.12); head.castShadow = true;
-  const jaw = new THREE_.Mesh(new THREE_.BoxGeometry(0.5, 0.14, 0.5), darkMat);
+  const jaw = new THREE_.Mesh(roundedBoxGeometry(0.5, 0.14, 0.5), darkMat);
   jaw.position.set(0, 1.88, 0.28);
-  const teeth = new THREE_.Mesh(new THREE_.BoxGeometry(0.42, 0.06, 0.06), teethMat);
+  const teeth = new THREE_.Mesh(roundedBoxGeometry(0.42, 0.06, 0.06), teethMat);
   teeth.position.set(0, 1.85, 0.55);
 
-  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.14,0.1,0.05), eyeMat);
+  const eyeL = new THREE_.Mesh(roundedBoxGeometry(0.14,0.1,0.05), eyeMat);
   const eyeR = eyeL.clone();
   eyeL.position.set(-0.18, 2.22, 0.5); eyeR.position.set(0.18, 2.22, 0.5);
 
   // clawed arms — swing with the walk cycle
-  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.26, 0.95, 0.26), mat);
+  const armL = new THREE_.Mesh(roundedBoxGeometry(0.26, 0.95, 0.26), mat);
   const armR = armL.clone();
   armL.position.set(-0.62, 1.35, 0.05); armR.position.set(0.62, 1.35, 0.05);
   armL.castShadow = armR.castShadow = true;
-  const clawGeo = new THREE_.ConeGeometry(0.08, 0.28, 4);
+  const clawGeo = new THREE_.ConeGeometry(0.08, 0.28, 10);
   [armL, armR].forEach(arm => {
     for (let i=-1;i<=1;i++){
       const claw = new THREE_.Mesh(clawGeo, darkMat);
@@ -2000,7 +2165,7 @@ function spawnEnemy(posOverride) {
     }
   });
 
-  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.32, 0.9, 0.32), mat);
+  const legL = new THREE_.Mesh(roundedBoxGeometry(0.32, 0.9, 0.32), mat);
   const legR = legL.clone();
   legL.position.set(-0.25, 0.45, 0); legR.position.set(0.25, 0.45, 0);
   legL.castShadow = legR.castShadow = true;
@@ -2016,7 +2181,7 @@ function spawnEnemy(posOverride) {
   let sx, sz;
   if (posOverride) { sx = posOverride.x; sz = posOverride.z; }
   else { const p = edgeSpawn(); sx = p.x; sz = p.z; }
-  g.position.set(sx, 0, sz);
+  g.position.set(sx, groundYAt(sx, sz), sz);
 
   const maxHp = 60 + (wave-1)*18;
   const speed = 4 + Math.min(wave*0.35, 5) + Math.random()*1.5;
@@ -2058,45 +2223,45 @@ function scatterSpawn() {
 // A ranged skeleton: bone-white, keeps its distance and fires projectiles (15 dmg each)
 function spawnSkeleton(posOverride) {
   const g = new THREE_.Group();
-  const bone = new THREE_.MeshStandardMaterial({ color: 0xd8cfa8, flatShading: true, roughness: .95 });
+  const bone = new THREE_.MeshStandardMaterial({ color: 0xd8cfa8, flatShading: false, roughness: .95 });
   const socketMat = new THREE_.MeshBasicMaterial({ color: 0x111111 });
   const pupilMat = new THREE_.MeshBasicMaterial({ color: 0xff2200 });
 
-  const body = new THREE_.Mesh(new THREE_.BoxGeometry(0.55, 1.2, 0.35), bone);  // narrow ribcage
+  const body = new THREE_.Mesh(roundedBoxGeometry(0.55, 1.2, 0.35), bone);  // narrow ribcage
   body.position.y = 1.15; body.castShadow = true;
   const ribs = [0,1,2].map(i => {
-    const rib = new THREE_.Mesh(new THREE_.BoxGeometry(0.46, 0.08, 0.06), bone);
+    const rib = new THREE_.Mesh(roundedBoxGeometry(0.46, 0.08, 0.06), bone);
     rib.position.set(0, 1.42 - i*0.24, 0.19);
     return rib;
   });
-  const pelvis = new THREE_.Mesh(new THREE_.BoxGeometry(0.5, 0.3, 0.32), bone);
+  const pelvis = new THREE_.Mesh(roundedBoxGeometry(0.5, 0.3, 0.32), bone);
   pelvis.position.y = 0.5;
-  const skull = new THREE_.Mesh(new THREE_.BoxGeometry(0.6, 0.6, 0.6), bone);
+  const skull = new THREE_.Mesh(roundedBoxGeometry(0.6, 0.6, 0.6), bone);
   skull.position.y = 2.05; skull.castShadow = true;
-  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.13,0.16,0.06), socketMat);
+  const eyeL = new THREE_.Mesh(roundedBoxGeometry(0.13,0.16,0.06), socketMat);
   const eyeR = eyeL.clone();
   eyeL.position.set(-0.15, 2.1, 0.31); eyeR.position.set(0.15, 2.1, 0.31);
-  const pupilL = new THREE_.Mesh(new THREE_.SphereGeometry(0.035, 6, 6), pupilMat);
+  const pupilL = new THREE_.Mesh(new THREE_.SphereGeometry(0.035, 8, 8), pupilMat);
   const pupilR = pupilL.clone();
   pupilL.position.set(-0.15, 2.1, 0.34); pupilR.position.set(0.15, 2.1, 0.34);
-  const jaw = new THREE_.Mesh(new THREE_.BoxGeometry(0.4,0.12,0.4), bone);
+  const jaw = new THREE_.Mesh(roundedBoxGeometry(0.4,0.12,0.4), bone);
   jaw.position.set(0, 1.78, 0.02);
-  const fangGeo = new THREE_.ConeGeometry(0.04, 0.14, 4);
+  const fangGeo = new THREE_.ConeGeometry(0.04, 0.14, 10);
   const fangs = [-1,0,1].map(i => {
     const fang = new THREE_.Mesh(fangGeo, bone);
     fang.position.set(i*0.12, 1.7, 0.2); fang.rotation.x = Math.PI;
     return fang;
   });
-  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.14, 1.0, 0.14), bone);
+  const armL = new THREE_.Mesh(roundedBoxGeometry(0.14, 1.0, 0.14), bone);
   const armR = armL.clone();
   armL.position.set(-0.42, 1.15, 0.1); armR.position.set(0.42, 1.15, 0.1);
-  const clawGeo = new THREE_.ConeGeometry(0.06, 0.2, 4);
+  const clawGeo = new THREE_.ConeGeometry(0.06, 0.2, 10);
   [armL, armR].forEach(arm => {
     const claw = new THREE_.Mesh(clawGeo, bone);
     claw.position.set(0, -0.55, 0.05); claw.rotation.x = -1.3;
     arm.add(claw);
   });
-  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 0.95, 0.16), bone);
+  const legL = new THREE_.Mesh(roundedBoxGeometry(0.16, 0.95, 0.16), bone);
   const legR = legL.clone();
   legL.position.set(-0.16, 0.45, 0); legR.position.set(0.16, 0.45, 0);
   legL.castShadow = legR.castShadow = true;
@@ -2108,7 +2273,7 @@ function spawnSkeleton(posOverride) {
   g.add(barBg, barFg);
 
   const p = posOverride || edgeSpawn();
-  g.position.set(p.x, 0, p.z);
+  g.position.set(p.x, groundYAt(p.x, p.z), p.z);
 
   const maxHp = 40 + (wave-1)*12;
   const speed = 3 + Math.min(wave*0.2, 3);
@@ -2134,41 +2299,41 @@ function spawnWaveEnemy(posOverride) {
 // A big, menacing boss: dark purple, horns, glowing eyes, ~2.5x scale
 function spawnBoss() {
   const g = new THREE_.Group();
-  const mat = new THREE_.MeshStandardMaterial({ color: 0x6a1b9a, flatShading: true, roughness: .55, metalness: .25, emissive: 0x2a0a3a, emissiveIntensity: .5 });
+  const mat = new THREE_.MeshStandardMaterial({ color: 0x6a1b9a, flatShading: false, roughness: .55, metalness: .25, emissive: 0x2a0a3a, emissiveIntensity: .5 });
   const eyeMat = new THREE_.MeshBasicMaterial({ color: 0xff3b3b });
-  const hornMat = new THREE_.MeshStandardMaterial({ color: 0x141018, flatShading: true, metalness: .4, roughness: .5 });
+  const hornMat = new THREE_.MeshStandardMaterial({ color: 0x141018, flatShading: false, metalness: .4, roughness: .5 });
   const crackMat = new THREE_.MeshBasicMaterial({ color: 0xff6a1a });
-  const tuskMat = new THREE_.MeshStandardMaterial({ color: 0xe8e0c8, flatShading: true });
+  const tuskMat = new THREE_.MeshStandardMaterial({ color: 0xe8e0c8, flatShading: false });
 
-  const body = new THREE_.Mesh(new THREE_.BoxGeometry(2.6, 3.4, 1.7), mat);
+  const body = new THREE_.Mesh(roundedBoxGeometry(2.6, 3.4, 1.7), mat);
   body.position.y = 2.7; body.castShadow = true;
   const cracks = [-0.6, 0, 0.6].map(x => {
-    const crack = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 1.4, 0.06), crackMat);
+    const crack = new THREE_.Mesh(roundedBoxGeometry(0.16, 1.4, 0.06), crackMat);
     crack.position.set(x, 2.9, 0.86);
     return crack;
   });
-  const head = new THREE_.Mesh(new THREE_.BoxGeometry(1.8, 1.8, 1.8), mat);
+  const head = new THREE_.Mesh(roundedBoxGeometry(1.8, 1.8, 1.8), mat);
   head.position.y = 5.4; head.castShadow = true;
-  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.4, 0.4, 0.12), eyeMat);
+  const eyeL = new THREE_.Mesh(roundedBoxGeometry(0.4, 0.4, 0.12), eyeMat);
   const eyeR = eyeL.clone();
   eyeL.position.set(-0.45, 5.55, 0.92); eyeR.position.set(0.45, 5.55, 0.92);
-  const hornL = new THREE_.Mesh(new THREE_.ConeGeometry(0.38, 1.3, 4), hornMat);
+  const hornL = new THREE_.Mesh(new THREE_.ConeGeometry(0.38, 1.3, 10), hornMat);
   hornL.position.set(-0.6, 6.6, 0); hornL.rotation.z = 0.45;
   const hornR = hornL.clone(); hornR.position.x = 0.6; hornR.rotation.z = -0.45;
-  const tuskL = new THREE_.Mesh(new THREE_.ConeGeometry(0.14, 0.5, 4), tuskMat);
+  const tuskL = new THREE_.Mesh(new THREE_.ConeGeometry(0.14, 0.5, 10), tuskMat);
   tuskL.position.set(-0.35, 4.75, 0.85); tuskL.rotation.x = -2.0;
   const tuskR = tuskL.clone(); tuskR.position.x = 0.35;
-  const shoulderPlateL = new THREE_.Mesh(new THREE_.BoxGeometry(1.0, 0.5, 1.1), hornMat);
+  const shoulderPlateL = new THREE_.Mesh(roundedBoxGeometry(1.0, 0.5, 1.1), hornMat);
   shoulderPlateL.position.set(-1.0, 4.1, 0);
   const shoulderPlateR = shoulderPlateL.clone(); shoulderPlateR.position.x = 1.0;
-  const spikeGeo = new THREE_.ConeGeometry(0.18, 0.55, 4);
+  const spikeGeo = new THREE_.ConeGeometry(0.18, 0.55, 10);
   const spikeL = new THREE_.Mesh(spikeGeo, hornMat); spikeL.position.set(-1.0, 4.5, 0);
   const spikeR = spikeL.clone(); spikeR.position.x = 1.0;
-  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.75, 2.2, 0.75), mat);
+  const armL = new THREE_.Mesh(roundedBoxGeometry(0.75, 2.2, 0.75), mat);
   const armR = armL.clone();
   armL.position.set(-1.85, 2.6, 0.2); armR.position.set(1.85, 2.6, 0.2);
   armL.castShadow = armR.castShadow = true;
-  const clawGeo = new THREE_.ConeGeometry(0.16, 0.5, 4);
+  const clawGeo = new THREE_.ConeGeometry(0.16, 0.5, 10);
   [armL, armR].forEach(arm => {
     for (let i=-1;i<=1;i++){
       const claw = new THREE_.Mesh(clawGeo, hornMat);
@@ -2176,7 +2341,7 @@ function spawnBoss() {
       arm.add(claw);
     }
   });
-  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.85, 2.2, 0.85), mat);
+  const legL = new THREE_.Mesh(roundedBoxGeometry(0.85, 2.2, 0.85), mat);
   const legR = legL.clone();
   legL.position.set(-0.65, 1.1, 0); legR.position.set(0.65, 1.1, 0);
   legL.castShadow = legR.castShadow = true;
@@ -2188,7 +2353,7 @@ function spawnBoss() {
   barBg.position.y = 7.0; barFg.position.y = 7.0; barFg.position.z = 0.01;
   g.add(barBg, barFg);
 
-  g.position.set(0, 0, -(ARENA - 8));   // enter from the far side
+  g.position.set(0, groundYAt(0, -(ARENA - 8)), -(ARENA - 8));   // enter from the far side
 
   const maxHp = 900 + wave * 120;
   const speed = 3.0 + Math.min(wave * 0.12, 3);
@@ -2210,41 +2375,41 @@ function spawnBoss() {
 function spawnWarlordBoss() {
   const cfg = BOSSES.warlord;
   const g = new THREE_.Group();
-  const mat = new THREE_.MeshStandardMaterial({ color: 0x6a1b9a, flatShading: true, roughness: .55, metalness: .25, emissive: 0x2a0a3a, emissiveIntensity: .5 });
+  const mat = new THREE_.MeshStandardMaterial({ color: 0x6a1b9a, flatShading: false, roughness: .55, metalness: .25, emissive: 0x2a0a3a, emissiveIntensity: .5 });
   const eyeMat = new THREE_.MeshBasicMaterial({ color: 0xff3b3b });
-  const hornMat = new THREE_.MeshStandardMaterial({ color: 0x141018, flatShading: true, metalness: .4, roughness: .5 });
+  const hornMat = new THREE_.MeshStandardMaterial({ color: 0x141018, flatShading: false, metalness: .4, roughness: .5 });
   const crackMat = new THREE_.MeshBasicMaterial({ color: 0xff6a1a });
-  const tuskMat = new THREE_.MeshStandardMaterial({ color: 0xe8e0c8, flatShading: true });
+  const tuskMat = new THREE_.MeshStandardMaterial({ color: 0xe8e0c8, flatShading: false });
 
-  const body = new THREE_.Mesh(new THREE_.BoxGeometry(2.6, 3.4, 1.7), mat);
+  const body = new THREE_.Mesh(roundedBoxGeometry(2.6, 3.4, 1.7), mat);
   body.position.y = 2.7; body.castShadow = true;
   const cracks = [-0.6, 0, 0.6].map(x => {
-    const crack = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 1.4, 0.06), crackMat);
+    const crack = new THREE_.Mesh(roundedBoxGeometry(0.16, 1.4, 0.06), crackMat);
     crack.position.set(x, 2.9, 0.86);
     return crack;
   });
-  const head = new THREE_.Mesh(new THREE_.BoxGeometry(1.8, 1.8, 1.8), mat);
+  const head = new THREE_.Mesh(roundedBoxGeometry(1.8, 1.8, 1.8), mat);
   head.position.y = 5.4; head.castShadow = true;
-  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.4, 0.4, 0.12), eyeMat);
+  const eyeL = new THREE_.Mesh(roundedBoxGeometry(0.4, 0.4, 0.12), eyeMat);
   const eyeR = eyeL.clone();
   eyeL.position.set(-0.45, 5.55, 0.92); eyeR.position.set(0.45, 5.55, 0.92);
-  const hornL = new THREE_.Mesh(new THREE_.ConeGeometry(0.38, 1.3, 4), hornMat);
+  const hornL = new THREE_.Mesh(new THREE_.ConeGeometry(0.38, 1.3, 10), hornMat);
   hornL.position.set(-0.6, 6.6, 0); hornL.rotation.z = 0.45;
   const hornR = hornL.clone(); hornR.position.x = 0.6; hornR.rotation.z = -0.45;
-  const tuskL = new THREE_.Mesh(new THREE_.ConeGeometry(0.14, 0.5, 4), tuskMat);
+  const tuskL = new THREE_.Mesh(new THREE_.ConeGeometry(0.14, 0.5, 10), tuskMat);
   tuskL.position.set(-0.35, 4.75, 0.85); tuskL.rotation.x = -2.0;
   const tuskR = tuskL.clone(); tuskR.position.x = 0.35;
-  const shoulderPlateL = new THREE_.Mesh(new THREE_.BoxGeometry(1.0, 0.5, 1.1), hornMat);
+  const shoulderPlateL = new THREE_.Mesh(roundedBoxGeometry(1.0, 0.5, 1.1), hornMat);
   shoulderPlateL.position.set(-1.0, 4.1, 0);
   const shoulderPlateR = shoulderPlateL.clone(); shoulderPlateR.position.x = 1.0;
-  const spikeGeo = new THREE_.ConeGeometry(0.18, 0.55, 4);
+  const spikeGeo = new THREE_.ConeGeometry(0.18, 0.55, 10);
   const spikeL = new THREE_.Mesh(spikeGeo, hornMat); spikeL.position.set(-1.0, 4.5, 0);
   const spikeR = spikeL.clone(); spikeR.position.x = 1.0;
-  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.75, 2.2, 0.75), mat);
+  const armL = new THREE_.Mesh(roundedBoxGeometry(0.75, 2.2, 0.75), mat);
   const armR = armL.clone();
   armL.position.set(-1.85, 2.6, 0.2); armR.position.set(1.85, 2.6, 0.2);
   armL.castShadow = armR.castShadow = true;
-  const clawGeo = new THREE_.ConeGeometry(0.16, 0.5, 4);
+  const clawGeo = new THREE_.ConeGeometry(0.16, 0.5, 10);
   [armL, armR].forEach(arm => {
     for (let i=-1;i<=1;i++){
       const claw = new THREE_.Mesh(clawGeo, hornMat);
@@ -2252,7 +2417,7 @@ function spawnWarlordBoss() {
       arm.add(claw);
     }
   });
-  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.85, 2.2, 0.85), mat);
+  const legL = new THREE_.Mesh(roundedBoxGeometry(0.85, 2.2, 0.85), mat);
   const legR = legL.clone();
   legL.position.set(-0.65, 1.1, 0); legR.position.set(0.65, 1.1, 0);
   legL.castShadow = legR.castShadow = true;
@@ -2263,7 +2428,7 @@ function spawnWarlordBoss() {
   barBg.position.y = 7.0; barFg.position.y = 7.0; barFg.position.z = 0.01;
   g.add(barBg, barFg);
 
-  g.position.set(0, 0, -(ARENA - 8));
+  g.position.set(0, groundYAt(0, -(ARENA - 8)), -(ARENA - 8));
 
   const enemy = {
     group: g, hitMesh: body, alive: true, hp: cfg.hp, maxHp: cfg.hp,
@@ -2282,36 +2447,36 @@ function spawnWarlordBoss() {
 function spawnSkitterfangBoss() {
   const cfg = BOSSES.skitterfang;
   const g = new THREE_.Group();
-  const bone = new THREE_.MeshStandardMaterial({ color: 0xcfe8c8, flatShading: true, roughness: .9, emissive: 0x2a5a2a, emissiveIntensity: .45 });
+  const bone = new THREE_.MeshStandardMaterial({ color: 0xcfe8c8, flatShading: false, roughness: .9, emissive: 0x2a5a2a, emissiveIntensity: .45 });
   const socketMat = new THREE_.MeshBasicMaterial({ color: 0x111111 });
   const pupilMat = new THREE_.MeshBasicMaterial({ color: 0x4dff4d });
 
-  const body = new THREE_.Mesh(new THREE_.BoxGeometry(0.55, 1.2, 0.35), bone);
+  const body = new THREE_.Mesh(roundedBoxGeometry(0.55, 1.2, 0.35), bone);
   body.position.y = 1.15; body.castShadow = true;
-  const pelvis = new THREE_.Mesh(new THREE_.BoxGeometry(0.5, 0.3, 0.32), bone);
+  const pelvis = new THREE_.Mesh(roundedBoxGeometry(0.5, 0.3, 0.32), bone);
   pelvis.position.y = 0.5;
-  const skull = new THREE_.Mesh(new THREE_.BoxGeometry(0.6, 0.6, 0.6), bone);
+  const skull = new THREE_.Mesh(roundedBoxGeometry(0.6, 0.6, 0.6), bone);
   skull.position.y = 2.05; skull.castShadow = true;
-  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.13,0.16,0.06), socketMat);
+  const eyeL = new THREE_.Mesh(roundedBoxGeometry(0.13,0.16,0.06), socketMat);
   const eyeR = eyeL.clone();
   eyeL.position.set(-0.15, 2.1, 0.31); eyeR.position.set(0.15, 2.1, 0.31);
-  const pupilL = new THREE_.Mesh(new THREE_.SphereGeometry(0.04, 6, 6), pupilMat);
+  const pupilL = new THREE_.Mesh(new THREE_.SphereGeometry(0.04, 8, 8), pupilMat);
   const pupilR = pupilL.clone();
   pupilL.position.set(-0.15, 2.1, 0.34); pupilR.position.set(0.15, 2.1, 0.34);
-  const jaw = new THREE_.Mesh(new THREE_.BoxGeometry(0.4,0.12,0.4), bone);
+  const jaw = new THREE_.Mesh(roundedBoxGeometry(0.4,0.12,0.4), bone);
   jaw.position.set(0, 1.78, 0.02);
-  const fangGeo = new THREE_.ConeGeometry(0.045, 0.16, 4);
+  const fangGeo = new THREE_.ConeGeometry(0.045, 0.16, 10);
   const fangL = new THREE_.Mesh(fangGeo, bone); fangL.position.set(-0.12, 1.68, 0.2); fangL.rotation.x = Math.PI;
   const fangR = fangL.clone(); fangR.position.x = 0.12;
-  const armL = new THREE_.Mesh(new THREE_.BoxGeometry(0.14, 1.0, 0.14), bone);
+  const armL = new THREE_.Mesh(roundedBoxGeometry(0.14, 1.0, 0.14), bone);
   const armR = armL.clone();
   armL.position.set(-0.42, 1.15, 0.1); armR.position.set(0.42, 1.15, 0.1);
-  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.16, 0.95, 0.16), bone);
+  const legL = new THREE_.Mesh(roundedBoxGeometry(0.16, 0.95, 0.16), bone);
   const legR = legL.clone();
   legL.position.set(-0.16, 0.45, 0); legR.position.set(0.16, 0.45, 0);
   legL.castShadow = legR.castShadow = true;
   // extra spindly "skitter" legs jutting from the torso
-  const spiderLegGeo = new THREE_.CylinderGeometry(0.05, 0.03, 1.1, 5);
+  const spiderLegGeo = new THREE_.CylinderGeometry(0.05, 0.03, 1.1, 10);
   const extraLegs = [[-0.55, 1.3, 0.55], [0.55, 1.3, 0.55], [-0.55, 1.3, -0.35], [0.55, 1.3, -0.35]].map(([x,y,z]) => {
     const el = new THREE_.Mesh(spiderLegGeo, bone);
     el.position.set(x, y, z);
@@ -2327,7 +2492,7 @@ function spawnSkitterfangBoss() {
   barBg.position.y = 2.7; barFg.position.y = 2.7; barFg.position.z = 0.01;
   g.add(barBg, barFg);
 
-  g.position.set(0, 0, -(ARENA - 8));
+  g.position.set(0, groundYAt(0, -(ARENA - 8)), -(ARENA - 8));
 
   const enemy = {
     group: g, hitMesh: body, alive: true, hp: cfg.hp, maxHp: cfg.hp,
@@ -2347,24 +2512,24 @@ function spawnSkitterfangBoss() {
 function spawnReaperBoss() {
   const cfg = BOSSES.reaper;
   const g = new THREE_.Group();
-  const mat = new THREE_.MeshStandardMaterial({ color: 0x1a1015, flatShading: true, roughness: .45, metalness: .4, emissive: 0x6a1010, emissiveIntensity: .5 });
-  const faceMat = new THREE_.MeshStandardMaterial({ color: 0x0a0608, flatShading: true, roughness: .8 });
+  const mat = new THREE_.MeshStandardMaterial({ color: 0x1a1015, flatShading: false, roughness: .45, metalness: .4, emissive: 0x6a1010, emissiveIntensity: .5 });
+  const faceMat = new THREE_.MeshStandardMaterial({ color: 0x0a0608, flatShading: false, roughness: .8 });
   const eyeMat = new THREE_.MeshBasicMaterial({ color: 0xff2b2b });
-  const bladeMat = new THREE_.MeshStandardMaterial({ color: 0xb81d1d, flatShading: true, metalness: .5, roughness: .4 });
-  const cloakMat = new THREE_.MeshStandardMaterial({ color: 0x0d0810, flatShading: true, roughness: .95, side: THREE_.DoubleSide });
+  const bladeMat = new THREE_.MeshStandardMaterial({ color: 0xb81d1d, flatShading: false, metalness: .5, roughness: .4 });
+  const cloakMat = new THREE_.MeshStandardMaterial({ color: 0x0d0810, flatShading: false, roughness: .95, side: THREE_.DoubleSide });
 
-  const body = new THREE_.Mesh(new THREE_.BoxGeometry(1.5, 2.6, 1.0), mat);
+  const body = new THREE_.Mesh(roundedBoxGeometry(1.5, 2.6, 1.0), mat);
   body.position.y = 2.0; body.castShadow = true;
-  const head = new THREE_.Mesh(new THREE_.BoxGeometry(1.0, 1.0, 1.0), mat);
+  const head = new THREE_.Mesh(roundedBoxGeometry(1.0, 1.0, 1.0), mat);
   head.position.y = 3.9; head.castShadow = true;
-  const face = new THREE_.Mesh(new THREE_.BoxGeometry(0.7, 0.6, 0.15), faceMat);
+  const face = new THREE_.Mesh(roundedBoxGeometry(0.7, 0.6, 0.15), faceMat);
   face.position.set(0, 3.85, 0.5);
-  const eyeL = new THREE_.Mesh(new THREE_.BoxGeometry(0.22, 0.22, 0.08), eyeMat);
+  const eyeL = new THREE_.Mesh(roundedBoxGeometry(0.22, 0.22, 0.08), eyeMat);
   const eyeR = eyeL.clone();
   eyeL.position.set(-0.25, 3.95, 0.58); eyeR.position.set(0.25, 3.95, 0.58);
   const blade = new THREE_.Mesh(new THREE_.ConeGeometry(0.5, 2.4, 3), bladeMat);
   blade.position.set(0.95, 2.6, 0); blade.rotation.z = -0.7; blade.rotation.y = 0.3;
-  const legL = new THREE_.Mesh(new THREE_.BoxGeometry(0.5, 1.7, 0.5), mat);
+  const legL = new THREE_.Mesh(roundedBoxGeometry(0.5, 1.7, 0.5), mat);
   const legR = legL.clone();
   legL.position.set(-0.4, 0.85, 0); legR.position.set(0.4, 0.85, 0);
   legL.castShadow = legR.castShadow = true;
@@ -2383,7 +2548,7 @@ function spawnReaperBoss() {
   barBg.position.y = 5.0; barFg.position.y = 5.0; barFg.position.z = 0.01;
   g.add(barBg, barFg);
 
-  g.position.set(0, 0, -(ARENA - 8));
+  g.position.set(0, groundYAt(0, -(ARENA - 8)), -(ARENA - 8));
 
   const enemy = {
     group: g, hitMesh: body, alive: true, hp: cfg.hp, maxHp: cfg.hp,
@@ -2452,7 +2617,7 @@ function executeBossSpecial(e, ppos) {
     const d = Math.hypot(ppos.x - e.group.position.x, ppos.z - e.group.position.z);
     const dodged = d < cfg.slamRadius && !player.onGround;
     if (d < cfg.slamRadius && player.onGround && !ADMIN.godMode) {
-      player.health -= cfg.specialDmg;
+      player.health -= absorbShield(cfg.specialDmg);
       const kx = ppos.x - e.group.position.x, kz = ppos.z - e.group.position.z;
       const kl = Math.max(0.01, Math.hypot(kx, kz));
       player.vel.x += (kx / kl) * 14; player.vel.z += (kz / kl) * 14; player.vel.y = 8;
@@ -2505,7 +2670,7 @@ function updateBossSpecial(e, dt, ppos, dist) {
       if (!e.dashHit && Math.hypot(ppos.x - e.group.position.x, ppos.z - e.group.position.z) < 2.6) {
         e.dashHit = true;
         if (!ADMIN.godMode) {
-          player.health -= cfg.specialDmg;
+          player.health -= absorbShield(cfg.specialDmg);
           lastDamageTime = clock.elapsedTime; updateHealthHUD(); damageFlash();
           if (player.health <= 0) endGame();
         }
@@ -2531,11 +2696,11 @@ function spawnCtfFlag() {
   ctfFlagPos = { x, z };
 
   const g = new THREE_.Group();
-  const pole = new THREE_.Mesh(new THREE_.CylinderGeometry(0.1, 0.1, 4, 8),
-    new THREE_.MeshStandardMaterial({ color: 0xcccccc, flatShading: true, metalness: .4, roughness: .5 }));
+  const pole = new THREE_.Mesh(new THREE_.CylinderGeometry(0.1, 0.1, 4, 12),
+    new THREE_.MeshStandardMaterial({ color: 0xcccccc, flatShading: false, metalness: .4, roughness: .5 }));
   pole.position.y = 2; g.add(pole);
   const cloth = new THREE_.Mesh(new THREE_.PlaneGeometry(1.4, 0.9),
-    new THREE_.MeshStandardMaterial({ color: 0xffd479, flatShading: true, side: THREE_.DoubleSide }));
+    new THREE_.MeshStandardMaterial({ color: 0xffd479, flatShading: false, side: THREE_.DoubleSide }));
   cloth.position.set(0.7, 3.3, 0);
   g.add(cloth);
   g.userData.cloth = cloth;
@@ -2786,13 +2951,18 @@ function flashWaveBanner() {
 }
 
 // ---------- Collision ----------
-// Jump-on-top-of platforms (CTF only): unlike regular obstacles, these only block
-// movement below their top surface — once your feet reach the top you walk freely across it.
-const ctfPlatforms = []; // {min:{x,z}, max:{x,z}, top}
-function platformTopAt(x, z) {
+// Hill mounds (main-arena cover + CTF parkour blocks/vantage tower): each contributes a
+// cone-shaped ramp — full height within topR of its center, tapering to 0 by baseR — so
+// walking toward one climbs it automatically via groundYAt's per-frame foot-snap, no jump needed.
+function moundHeightAt(x, z, platforms) {
   let top = 0;
-  for (const pf of ctfPlatforms) {
-    if (x > pf.min.x && x < pf.max.x && z > pf.min.z && z < pf.max.z && pf.top > top) top = pf.top;
+  for (const pf of platforms) {
+    const d = Math.hypot(x - pf.x, z - pf.z);
+    let h;
+    if (d <= pf.topR) h = pf.h;
+    else if (d >= pf.baseR) h = 0;
+    else h = pf.h * (pf.baseR - d) / (pf.baseR - pf.topR);
+    if (h > top) top = h;
   }
   return top;
 }
@@ -2815,18 +2985,6 @@ function collideMove(pos, dx, dz, feetY = 0) {
       nz = pos.z;
     }
   }
-  if (arenaHalf === CTF_ARENA) {
-    for (const pf of ctfPlatforms) {
-      if (feetY < pf.top - 0.1) {
-        if (nx + r > pf.min.x && nx - r < pf.max.x && pos.z + r > pf.min.z && pos.z - r < pf.max.z) nx = pos.x;
-      }
-    }
-    for (const pf of ctfPlatforms) {
-      if (feetY < pf.top - 0.1) {
-        if (nx + r > pf.min.x && nx - r < pf.max.x && nz + r > pf.min.z && nz - r < pf.max.z) nz = pos.z;
-      }
-    }
-  }
   pos.x = nx; pos.z = nz;
 }
 
@@ -2838,6 +2996,7 @@ function update(dt) {
   let speed = (keys[b.sprint] ? 17 : 10.5);
   if (clock.elapsedTime < speedBoostEnd) speed *= 1.7;   // Speed Boost ability
   if (gliderActive) speed *= 1.6;                         // Glider = fly faster
+  if (shieldActive) speed *= SHIELD_SPEED_MUL;             // Shield raised = slower
   if (aiming) speed *= 0.5;                                // Aiming down sights = slower
   const forward = new THREE_.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const right   = new THREE_.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
@@ -2876,7 +3035,7 @@ function update(dt) {
   }
   player.vel.y -= gravity * dt;
   camera.position.y += player.vel.y * dt;
-  const standTop = arenaHalf === CTF_ARENA ? platformTopAt(camera.position.x, camera.position.z) : 0;
+  const standTop = groundYAt(camera.position.x, camera.position.z);
   const floorY = standTop + (sliding ? SLIDE_HEIGHT : PLAYER_HEIGHT);
   if (camera.position.y <= floorY) {
     camera.position.y = floorY; player.vel.y = 0;
@@ -3059,12 +3218,12 @@ function update(dt) {
       } else {
         // melee reach: an enemy can't hit you if you're up above it (e.g. jumped over its head)
         const playerFeetY = camera.position.y - (sliding ? SLIDE_HEIGHT : PLAYER_HEIGHT);
-        const outOfReach = playerFeetY > e.headBottomY + 0.6;
+        const outOfReach = playerFeetY > e.group.position.y + e.headBottomY + 0.6;
         // attack (bosses hit much harder)
         if (!outOfReach && clock.elapsedTime - e.lastAttack > 0.8) {
           e.lastAttack = clock.elapsedTime;
           if (!ADMIN.godMode) {
-            player.health -= e.bossType ? 14 : (e.isBoss ? (24 + wave * 2) : (8 + wave));
+            player.health -= absorbShield(e.bossType ? 14 : (e.isBoss ? (24 + wave * 2) : (8 + wave)));
             lastDamageTime = clock.elapsedTime;
             updateHealthHUD();
             damageFlash();
@@ -3074,6 +3233,7 @@ function update(dt) {
       }
     }
     }
+    e.group.position.y = groundYAt(e.group.position.x, e.group.position.z);
     // billboard health bar
     e.barFg.lookAt(ppos); e.barFg.parent && (e.barFg.quaternion.copy(camera.quaternion));
   }
@@ -3114,6 +3274,13 @@ function updateAbilityHUD() {
   const t = clock.elapsedTime;
   for (const key in abilChips) {
     const ref = abilChips[key]; if (!ref) continue;
+    if (key === 'shield' && shieldActive) {
+      ref.chip.classList.remove('cooling'); ref.chip.classList.add('shielding');
+      ref.fill.style.height = Math.max(0, (shieldHp / SHIELD_MAX_HP) * 100) + '%';
+      ref.num.textContent = Math.ceil(shieldHp);
+      continue;
+    }
+    ref.chip.classList.remove('shielding');
     const remain = ADMIN.noCd ? 0 : ABILITIES[key].cdEnd - t;
     if (remain > 0) {
       ref.chip.classList.add('cooling');
@@ -3554,7 +3721,7 @@ function startGame() {
   for (const k in ABILITIES) { ABILITIES[k].owned = false; ABILITIES[k].cdEnd = 0; }
   // reset deployables (bought per-run with coins, like abilities)
   for (const k in DEPLOYABLES) { DEPLOYABLES[k].owned = false; DEPLOYABLES[k].cdEnd = 0; }
-  speedBoostEnd = 0; gliderActive = false; airJumps = 0; meleeSwing = 0; meleeSwingT = -1;
+  speedBoostEnd = 0; gliderActive = false; shieldActive = false; shieldHp = 0; airJumps = 0; meleeSwing = 0; meleeSwingT = -1;
   curWeapon = 1; reloading = false; aiming = false; camera.fov = BASE_FOV; camera.updateProjectionMatrix();   // start on Pistol
   buildViewModel();
   renderWeaponList();
